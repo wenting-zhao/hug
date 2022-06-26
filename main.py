@@ -146,7 +146,7 @@ def run_model(model, linear, batch, train=True):
     outs = m(outs)
     return outs
 
-def evaluate(args, model, linear, dataloader, split):
+def evaluate(steps, args, model, linear, dataloader, split):
     metric = load_metric("accuracy")
     model.eval()
     for step, eval_batch in enumerate(dataloader):
@@ -159,7 +159,7 @@ def evaluate(args, model, linear, dataloader, split):
     eval_metric = metric.compute()
     if not args.nolog:
         wandb.log({
-            "step": completed_steps,
+            "step": steps,
             f"{split} Acc": eval_metric})
     return eval_metric['accuracy']
 
@@ -222,8 +222,8 @@ def main():
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if step % (args.eval_steps*args.gradient_accumulation_steps) == 0:
-                valid_acc = evaluate(args, model, linear, eval_dataloader, "Valid")
-                evaluate(args, model, linear, test_dataloader, "Test")
+                valid_acc = evaluate(completed_steps, args, model, linear, eval_dataloader, "Valid")
+                evaluate(completed_steps, args, model, linear, test_dataloader, "Test")
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
@@ -231,7 +231,6 @@ def main():
             model.train()
             outs = run_model(model, linear, batch)
             loss = loss_fct(outs, batch["labels"])
-            print(loss.item())
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
