@@ -241,7 +241,6 @@ def main():
                 if not args.nolog:
                     wandb.log({
                         "step": completed_steps,
-                        "Reg": entropy.item(),
                         "Train Loss": loss.item()})
 
 if __name__ == '__main__':
