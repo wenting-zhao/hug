@@ -82,7 +82,7 @@ def get_args():
                         help="batch size per gpu.")
     parser.add_argument("--eval_batch_size", default=32, type=int,
                         help="eval batch size per gpu.")
-    parser.add_argument("--eval_steps", default=1000, type=int,
+    parser.add_argument("--eval_steps", default=5000, type=int,
                         help="number of steps between each evaluation.")
     parser.add_argument("--epoch", '-epoch', default=10, type=int,
                         help="The number of epochs for fine-tuning.")
@@ -221,7 +221,7 @@ def main():
     best_valid = float('-inf')
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
-            if step % (args.eval_steps*args.gradient_accumulation_steps) == 0:
+            if step % (args.eval_steps*args.gradient_accumulation_steps) == 0 and step > 0:
                 valid_acc = evaluate(completed_steps, args, model, linear, eval_dataloader, "Valid")
                 evaluate(completed_steps, args, model, linear, test_dataloader, "Test")
                 if valid_acc > best_valid:
