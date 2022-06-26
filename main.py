@@ -135,13 +135,19 @@ def run_model(model, linear, batch, train=True):
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
     sentence_embeddings = sentence_embeddings.view(bs, num_choices, -1)
     pairs = []
-    for se in sentence_embeddings:
-        for i in range(num_choices):
-            for j in range(i+1, num_choices):
-                diff = torch.abs(se[i] - se[j])
-                concated = torch.concat((se[i], se[j], diff))
-                pairs.append(concated)
-    pairs = torch.stack(pairs)
+    #for se in sentence_embeddings:
+    #    for i in range(num_choices):
+    #        for j in range(i+1, num_choices):
+    #            diff = torch.abs(se[i] - se[j])
+    #            concated = torch.concat((se[i], se[j], diff))
+    #            pairs.append(concated)
+    #pairs = torch.stack(pairs)
+    # justin turned the for loop above into the following batching
+    combs = torch.combinations(torch.arange(num_choices))
+    C = len(combs)
+    paired = sentence_embeddings[:,combs,:]
+    diff = torch.abs(paired[:,:,0] - paired[:,:,1])
+    pairs = torch.cat([paired.view(bs,C,-1), diff], dim=-1).view(-1, 3*sentence_embeddings.shape[-1])
     outs = linear(pairs).view(bs, -1)
     outs = m(outs)
     return outs
