@@ -118,7 +118,7 @@ def mean_pooling(model_output, attention_mask):
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
     return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
-def run_model(model, linear, batch, train=True):
+def run_model(model, mlp, linear, batch, train=True):
     m = nn.Softmax(dim=-1)
     bs = len(batch['labels'])
     num_choices = len(batch['input_ids'][0])
@@ -134,29 +134,27 @@ def run_model(model, linear, batch, train=True):
     sentence_embeddings = mean_pooling(outputs, batch["attention_mask"])
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
     sentence_embeddings = sentence_embeddings.view(bs, num_choices, -1)
-    pairs = []
-    #for se in sentence_embeddings:
-    #    for i in range(num_choices):
-    #        for j in range(i+1, num_choices):
-    #            diff = torch.abs(se[i] - se[j])
-    #            concated = torch.concat((se[i], se[j], diff))
-    #            pairs.append(concated)
-    #pairs = torch.stack(pairs)
-    # justin turned the for loop above into the following batching
-    combs = torch.combinations(torch.arange(num_choices))
+    single_outs = linear(sentence_embeddings).view(bs, -1)
+    single_outs = m(single_outs)
+    combs = torch.cartesian_prod(torch.arange(num_choices), torch.arange(num_choices))
     C = len(combs)
     paired = sentence_embeddings[:,combs,:]
-    diff = torch.abs(paired[:,:,0] - paired[:,:,1])
-    pairs = torch.cat([paired.view(bs,C,-1), diff], dim=-1).view(-1, 3*sentence_embeddings.shape[-1])
-    outs = linear(pairs).view(bs, -1)
-    outs = m(outs)
+    pairs = paired.view(bs,C,-1)
+    pair_outs = mlp(pairs).view(bs, -1)
+    pair_outs = m(pair_outs).reshape(bs, num_choices, num_choices)
+    pair_outs = pair_outs.permute(2, 0, 1)
+    outs = single_outs * pair_outs
+    outs = outs.permute(1, 2, 0)
+    outs = outs + outs.permute(0, 2, 1)
+    indices = torch.triu_indices(num_choices, num_choices, offset=1).to(device)
+    outs = outs[:, indices[0], indices[1]]
     return outs
 
-def evaluate(steps, args, model, linear, dataloader, split):
+def evaluate(steps, args, model, mlp, linear, dataloader, split):
     metric = load_metric("accuracy")
     model.eval()
     for step, eval_batch in enumerate(dataloader):
-        eval_outs = run_model(model, linear, eval_batch, train=False)
+        eval_outs = run_model(model, mlp, linear, eval_batch, train=False)
         predictions = eval_outs.argmax(dim=-1)
         metric.add_batch(
             predictions=predictions,
@@ -174,8 +172,18 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     model = AutoModel.from_pretrained(args.model_dir)
     model = model.to(device)
-    linear = nn.Linear(model.config.hidden_size*3, 1)
+    linear = nn.Linear(model.config.hidden_size, 1)
     linear = linear.to(device)
+    mlp = nn.Sequential(
+            nn.Linear(model.config.hidden_size*2, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1)
+            )
+    mlp = mlp.to(device)
 
     (train_paras, valid_paras), (train_labels, valid_labels) = prepare(args.model_dir, "train")
     test_paras, test_labels = prepare(args.model_dir, "validation")
@@ -198,6 +206,14 @@ def main():
         },
         {
             "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "weight_decay": 0.0,
+        },
+        {
+            "params": [p for n, p in mlp.named_parameters() if not any(nd in n for nd in no_decay)],
+            "weight_decay": args.weight_decay,
+        },
+        {
+            "params": [p for n, p in mlp.named_parameters() if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0,
         },
         {
@@ -236,14 +252,14 @@ def main():
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if step % (args.eval_steps*args.gradient_accumulation_steps) == 0 and step > 0:
-                valid_acc = evaluate(completed_steps, args, model, linear, eval_dataloader, "Valid")
-                evaluate(completed_steps, args, model, linear, test_dataloader, "Test")
+                valid_acc = evaluate(completed_steps, args, model, mlp, linear, eval_dataloader, "Valid")
+                evaluate(completed_steps, args, model, mlp, linear, test_dataloader, "Test")
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
                         model.save_pretrained(f"{args.output_model_dir}/{run_name}")
             model.train()
-            outs = run_model(model, linear, batch)
+            outs = run_model(model, mlp, linear, batch)
             loss = loss_fct(outs, batch["labels"])
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
