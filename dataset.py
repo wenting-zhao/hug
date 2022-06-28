@@ -17,7 +17,7 @@ def preprocess_function(examples, tokenizer):
     tokenized_paras = [tokenized_paras[i:i+10] for i in range(0, len(tokenized_paras), 10)]
     return tokenized_paras
 
-def prepare(path, split):
+def prepare(path, split, baseline=False):
     print("preparing HotpotQA")
     tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
     data = load_dataset('hotpot_qa', 'distractor')[split]
@@ -49,7 +49,13 @@ def prepare(path, split):
                 l.append(i)
         assert len(l) == 2
         assert l[0] < l[1]
-        labels.append(ij2label[(l[0], l[1])])
+        if baseline:
+            label = [0] * 10
+            label[l[0]] = 1
+            label[l[1]] = 1
+            labels.append(label)
+        else:
+            labels.append(ij2label[(l[0], l[1])])
     if split == "train": 
         order = list(range(len(labels)))
         random.shuffle(order)
