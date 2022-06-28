@@ -78,6 +78,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--nolog', action='store_true')
     parser.add_argument('--save_model', action='store_true')
+    parser.add_argument('--save_results', action='store_true')
     parser.add_argument("--batch_size", '-b', default=1, type=int,
                         help="batch size per gpu.")
     parser.add_argument("--eval_batch_size", default=32, type=int,
@@ -89,6 +90,8 @@ def get_args():
     parser.add_argument("--model_dir", default="roberta-large", type=str,
                         help="The directory where the pretrained model will be loaded.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
+    parser.add_argument("--output_model_dir", default="./saved_models", type=str,
+                        help="The directory where the pretrained model will be saved.")
     parser.add_argument(
         "--warmup_ratio", type=float, default=0, help="Warmup ratio in the lr scheduler."
     )
@@ -145,7 +148,7 @@ def run_model(model, mlp, linear, batch, train=True):
     pair_outs = pair_outs.permute(2, 0, 1)
     outs = single_outs * pair_outs
     outs = outs.permute(1, 2, 0)
-    outs = outs + outs.permute(0, 2, 1)
+    #outs = outs + outs.permute(0, 2, 1)
     indices = torch.triu_indices(num_choices, num_choices, offset=1).to(device)
     outs = outs[:, indices[0], indices[1]]
     return outs
@@ -153,9 +156,13 @@ def run_model(model, mlp, linear, batch, train=True):
 def evaluate(steps, args, model, mlp, linear, dataloader, split):
     metric = load_metric("accuracy")
     model.eval()
+    if args.save_results:
+        results = []
     for step, eval_batch in enumerate(dataloader):
         eval_outs = run_model(model, mlp, linear, eval_batch, train=False)
         predictions = eval_outs.argmax(dim=-1)
+        if args.save_results:
+            results.append(eval_outs.cpu())
         metric.add_batch(
             predictions=predictions,
             references=eval_batch["labels"],
@@ -165,6 +172,8 @@ def evaluate(steps, args, model, mlp, linear, dataloader, split):
         wandb.log({
             "step": steps,
             f"{split} Acc": eval_metric})
+    if args.save_results:
+        torch.save(torch.cat(results, dim=0), f"logging/{args.run_name}|step-{steps}.pt")
     return eval_metric['accuracy']
 
 def main():
@@ -197,6 +206,7 @@ def main():
 
     model_name = args.model_dir.split('/')[-1]
     run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
+    args.run_name = run_name
 
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
