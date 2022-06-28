@@ -232,7 +232,7 @@ def main():
     best_valid = float('-inf')
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
-            if completed_steps % (args.eval_steps*args.gradient_accumulation_steps) == 0 and completed_steps > 0:
+            if completed_steps % args.eval_steps == 0 and completed_steps > 0:
                 valid_acc = evaluate(completed_steps, args, model, linear, eval_dataloader, "Valid")
                 evaluate(completed_steps, args, model, linear, test_dataloader, "Test")
                 if valid_acc > best_valid:
