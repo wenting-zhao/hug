@@ -139,18 +139,20 @@ def run_model(model, mlp, linear, batch, train=True):
     sentence_embeddings = sentence_embeddings.view(bs, num_choices, -1)
     single_outs = linear(sentence_embeddings).view(bs, -1)
     single_outs = m(single_outs)
-    combs = torch.cartesian_prod(torch.arange(num_choices), torch.arange(num_choices))
+    combs = torch.combinations(torch.arange(num_choices))
     C = len(combs)
     paired = sentence_embeddings[:,combs,:]
-    pairs = paired.view(bs,C,-1)
-    pair_outs = mlp(pairs).view(bs, -1)
-    pair_outs = m(pair_outs).reshape(bs, num_choices, num_choices)
-    pair_outs = pair_outs.permute(2, 0, 1)
-    outs = single_outs * pair_outs
-    outs = outs.permute(1, 2, 0)
-    #outs = outs + outs.permute(0, 2, 1)
-    indices = torch.triu_indices(num_choices, num_choices, offset=1).to(device)
-    outs = outs[:, indices[0], indices[1]]
+    diff = torch.abs(paired[:,:,0] - paired[:,:,1])
+    pairs = torch.cat([paired.view(bs,C,-1), diff], dim=-1).view(-1, 3*sentence_embeddings.shape[-1])
+    outs = mlp(pairs).view(bs, -1)
+    outs = m(outs)
+    res = []
+    st, ed = 0, 9
+    for i in range(9):
+        res.append(single_outs[:, i].view(bs, -1) * outs[:, st:ed])
+        st = ed
+        ed += (9-i-1)
+    res = torch.cat(res, dim=1)
     return outs
 
 def evaluate(steps, args, model, mlp, linear, dataloader, split):
@@ -184,7 +186,7 @@ def main():
     linear = nn.Linear(model.config.hidden_size, 1)
     linear = linear.to(device)
     mlp = nn.Sequential(
-            nn.Linear(model.config.hidden_size*2, 512),
+            nn.Linear(model.config.hidden_size*3, 512),
             nn.ReLU(),
             nn.Linear(512, 1024),
             nn.ReLU(),
