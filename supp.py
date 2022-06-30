@@ -65,10 +65,9 @@ class DataCollatorForMultipleChoice:
             return_tensors="pt",
         )
 
-        #max_label = max([len(l) for l in labels])
-        #for i in range(len(labels)):
-        #    labels[i] = labels[i] + [0] * (max_label - len(labels[i]))
-        labels = sum(labels, [])
+        max_label = max([len(l) for l in labels])
+        for i in range(len(labels)):
+            labels[i] = labels[i] + [0] * (max_label - len(labels[i]))
         # Add back labels
         batch["labels"] = torch.tensor(labels, dtype=torch.float)
         return batch
@@ -132,30 +131,52 @@ def run_model(model, linear, tok, batch, train=True):
     outs = outputs.last_hidden_state[indices[:, 0], indices[:, 1]]
     outs = linear(outs)
     outs = torch.sigmoid(outs).view(-1)
+    #final = []
+    #length = batch['labels'].shape[1]
+    #st = 0
+    #for i in range(bs):
+    #    num = len((indices[:, 0] == i).nonzero())
+    #    curr = outs[st:st+num]
+    #    curr_zeros = torch.zeros(length-num).to(device)
+    #    curr = torch.cat([curr, curr_zeros], dim=0)
+    #    final.append(curr)
+    #    st += num
+    #outs = torch.stack(final)
+    # the following code is adapted from sasha's suggestion
+    x = indices[:, 0]
+    L = len(x)
+    rows = torch.nn.functional.one_hot(x)
+    cols = rows.cumsum(0)[torch.arange(L), x] - 1
+    cols = torch.nn.functional.one_hot(cols)
+    outs = (outs[:, None, None] *
+             cols[:, None, :] *
+             rows[:, :, None]).sum(0)
+    if outs.shape[1] < batch['labels'].shape[1]:
+        outs = torch.cat([outs, torch.zeros(bs, batch['labels'].shape[1]-outs.shape[1]).to(device)], dim=1)
     return outs
 
 def evaluate(steps, args, model, linear, tok, dataloader, split):
-    metric = load_metric("accuracy")
     model.eval()
     if args.save_results:
         results = []
+    acc = []
     for step, eval_batch in enumerate(dataloader):
         eval_outs = run_model(model, linear, tok, eval_batch, train=False)
-        predictions = eval_outs.argmax(dim=-1)
+        eval_outs[eval_outs>0.5] = 1
+        eval_outs[eval_outs<=0.5] = 0
+        acc.append(torch.all(eval_outs == eval_batch["labels"], dim=1))
         if args.save_results:
             results.append(eval_outs.cpu())
-        metric.add_batch(
-            predictions=predictions,
-            references=eval_batch["labels"],
-        )
-    eval_metric = metric.compute()
+    acc = torch.cat(acc)
+    acc = acc.sum() / torch.numel(acc)
+    acc = acc.item()
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Acc": eval_metric})
+            f"{split} Acc": acc})
     if args.save_results:
         torch.save(torch.cat(results, dim=0), f"logging/{args.run_name}|step-{steps}.pt")
-    return eval_metric['accuracy']
+    return acc
 
 def main():
     args = get_args()
@@ -225,7 +246,7 @@ def main():
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if completed_steps % args.eval_steps == 0 and completed_steps > 0:
-                valid_acc = evaluate(completed_steps, args, model, linear, eval_dataloader, "Valid")
+                valid_acc = evaluate(completed_steps, args, model, linear, tokenizer, eval_dataloader, "Valid")
                 evaluate(completed_steps, args, model, linear, tokenizer, test_dataloader, "Test")
                 if valid_acc > best_valid:
                     best_valid = valid_acc
