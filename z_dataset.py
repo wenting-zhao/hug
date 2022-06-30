@@ -14,7 +14,7 @@ def preprocess_function(examples, tokenizer):
         t1, t2 = context["title"][labels[0]], context["title"][labels[1]]
         sents = context["sentences"]
         p1 = f' {tokenizer.cls_token}'.join(context["sentences"][labels[0]])
-        p1 = f'{q} {tokenizer.sep_token} {t1}: {tokenizer.cls_token} {p1} {tokenizer.sep_token}'
+        p1 = f'{q} {tokenizer.cls_token} {t1}: {tokenizer.cls_token} {p1} {tokenizer.sep_token}'
         p2 = f' {tokenizer.cls_token}'.join(context["sentences"][labels[1]])
         p2 = f'{t2}: {tokenizer.cls_token} {p2}'
         p = f"{p1} {p2}"

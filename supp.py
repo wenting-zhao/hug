@@ -66,8 +66,7 @@ class DataCollatorForMultipleChoice:
         )
 
         max_label = max([len(l) for l in labels])
-        for i in range(len(labels)):
-            labels[i] = labels[i] + [0] * (max_label - len(labels[i]))
+        labels = [labels[i] + [0] * (max_label - len(labels[i])) for i in range(len(labels))]
         # Add back labels
         batch["labels"] = torch.tensor(labels, dtype=torch.float)
         return batch
@@ -89,7 +88,7 @@ def get_args():
     parser.add_argument("--model_dir", default="roberta-large", type=str,
                         help="The directory where the pretrained model will be loaded.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
-    parser.add_argument("--output_model_dir", default="./saved_models", type=str,
+    parser.add_argument("--output_model_dir", default="./saved_supp_models", type=str,
                         help="The directory where the pretrained model will be saved.")
     parser.add_argument(
         "--warmup_ratio", type=float, default=0, help="Warmup ratio in the lr scheduler."
@@ -116,9 +115,7 @@ def get_args():
     return args
 
 def run_model(model, linear, tok, batch, train=True):
-    m = nn.Softmax(dim=-1)
     bs = len(batch['labels'])
-    num_choices = len(batch['input_ids'][0])
     for key in batch:
         batch[key] = batch[key].to(device)
     if train:
@@ -127,8 +124,7 @@ def run_model(model, linear, tok, batch, train=True):
         with torch.no_grad():
             outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
     indices = (batch['input_ids'][:, 1:] == tok.cls_token_id).nonzero(as_tuple=False)
-    indices = torch.stack([indices[:, 0], indices[:, 1]+1], dim=1)
-    outs = outputs.last_hidden_state[indices[:, 0], indices[:, 1]]
+    outs = outputs.last_hidden_state[:, 1:, :][indices[:, 0], indices[:, 1]]
     outs = linear(outs)
     outs = torch.sigmoid(outs).view(-1)
     #final = []
