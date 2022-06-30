@@ -20,6 +20,12 @@ import wandb
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
+THRESHOLDS=[0.01, 0.02, 0.03, 0.04, 0.05,
+            0.06, 0.07, 0.08, 0.09, 0.10,
+            0.15, 0.20, 0.25, 0.30, 0.35,
+            0.40, 0.45, 0.50, 0.55, 0.60,
+            0.65, 0.70, 0.75, 0.80, 0.85,
+            0.90, 0.95]
 
 @dataclass
 class DataCollatorForMultipleChoice:
@@ -123,7 +129,7 @@ def run_model(model, linear, tok, batch, train=True):
     else:
         with torch.no_grad():
             outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
-    indices = (batch['input_ids'][:, 1:] == tok.cls_token_id).nonzero(as_tuple=False)
+    indices = (batch['input_ids'][:, 1:] == tok.unk_token_id).nonzero(as_tuple=False)
     outs = outputs.last_hidden_state[:, 1:, :][indices[:, 0], indices[:, 1]]
     outs = linear(outs)
     outs = torch.sigmoid(outs).view(-1)
@@ -151,28 +157,34 @@ def run_model(model, linear, tok, batch, train=True):
         outs = torch.cat([outs, torch.zeros(bs, batch['labels'].shape[1]-outs.shape[1]).to(device)], dim=1)
     return outs
 
-def evaluate(steps, args, model, linear, tok, dataloader, split):
+def evaluate(steps, args, model, linear, tok, dataloader, split, threshold=THRESHOLDS):
     model.eval()
-    if args.save_results:
-        results = []
-    acc = []
+    results = []
+    labels = []
     for step, eval_batch in enumerate(dataloader):
         eval_outs = run_model(model, linear, tok, eval_batch, train=False)
-        eval_outs[eval_outs>0.5] = 1
-        eval_outs[eval_outs<=0.5] = 0
-        acc.append(torch.all(eval_outs == eval_batch["labels"], dim=1))
-        if args.save_results:
-            results.append(eval_outs.cpu())
-    acc = torch.cat(acc)
-    acc = acc.sum() / torch.numel(acc)
-    acc = acc.item()
+        results.append(eval_outs)
+        labels.append(eval_batch["labels"])
+    best_acc, best_t, best_preds = 0, 0, 0
+    for t in THRESHOLDS:
+        acc = []
+        for pred, ref in zip(results, labels):
+            curr = pred.detach().clone()
+            curr[curr>t] = 1
+            curr[curr<=t] = 0
+            acc.append(torch.all(curr == ref, dim=1))
+        acc = torch.cat(acc)
+        acc = acc.sum() / torch.numel(acc)
+        if acc > best_acc:
+            best_acc, best_t = acc.item(), t
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Acc": acc})
+            "threshold": best_t,
+            f"{split} Acc": best_acc})
     if args.save_results:
-        torch.save(torch.cat(results, dim=0), f"logging/{args.run_name}|step-{steps}.pt")
-    return acc
+        torch.save(results, f"logging/{args.run_name}|step-{steps}.pt")
+    return best_acc, best_t
 
 def main():
     args = get_args()
@@ -242,8 +254,8 @@ def main():
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if completed_steps % args.eval_steps == 0 and completed_steps > 0:
-                valid_acc = evaluate(completed_steps, args, model, linear, tokenizer, eval_dataloader, "Valid")
-                evaluate(completed_steps, args, model, linear, tokenizer, test_dataloader, "Test")
+                valid_acc, best_t = evaluate(completed_steps, args, model, linear, tokenizer, eval_dataloader, "Valid")
+                evaluate(completed_steps, args, model, linear, tokenizer, test_dataloader, "Test", [best_t])
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
