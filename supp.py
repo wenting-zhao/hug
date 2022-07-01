@@ -28,7 +28,7 @@ THRESHOLDS=[0.01, 0.02, 0.03, 0.04, 0.05,
             0.90, 0.95]
 
 @dataclass
-class DataCollatorForMultipleChoice:
+class DataCollatorForQA:
     """
     Data collator that will dynamically pad the inputs for multiple choice received.
     Args:
@@ -61,6 +61,8 @@ class DataCollatorForMultipleChoice:
         label_name = "label" if "label" in features[0].keys() else "labels"
         labels = [feature.pop(label_name) for feature in features]
         paras = [feature.pop("paras") for feature in features]
+        if isinstance(paras[0][0], list):
+            paras = sum(paras, [])
         paras = [{"input_ids": x} for x in paras]
 
         batch = self.tokenizer.pad(
@@ -81,6 +83,7 @@ class DataCollatorForMultipleChoice:
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--nolog', action='store_true')
+    parser.add_argument('--baseline', action='store_true')
     parser.add_argument('--save_model', action='store_true')
     parser.add_argument('--save_results', action='store_true')
     parser.add_argument("--batch_size", '-b', default=1, type=int,
@@ -120,7 +123,7 @@ def get_args():
     args = parser.parse_args()
     return args
 
-def run_model(model, linear, tok, batch, train=True):
+def run_model(model, linear, tok, batch, train=True, baseline=False):
     bs = len(batch['labels'])
     for key in batch:
         batch[key] = batch[key].to(device)
@@ -129,6 +132,10 @@ def run_model(model, linear, tok, batch, train=True):
     else:
         with torch.no_grad():
             outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+    if baseline:
+        seq_len = batch["input_ids"].shape[1]
+        batch["input_ids"] = batch["input_ids"].view(bs, seq_len*2, -1)
+        outputs.last_hidden_state = outputs.last_hidden_state.view(bs, seq_len*2, -1)
     indices = (batch['input_ids'] == tok.unk_token_id).nonzero(as_tuple=False)
     outs = outputs.last_hidden_state[indices[:, 0], indices[:, 1]]
     outs = linear(outs)
@@ -162,7 +169,7 @@ def evaluate(steps, args, model, linear, tok, dataloader, split, threshold=THRES
     results = []
     labels = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs = run_model(model, linear, tok, eval_batch, train=False)
+        eval_outs = run_model(model, linear, tok, eval_batch, train=False, baseline=args.baseline)
         results.append(eval_outs)
         labels.append(eval_batch["labels"])
     best_acc, best_t, best_preds = 0, 0, 0
@@ -194,18 +201,19 @@ def main():
     linear = nn.Linear(model.config.hidden_size, 1)
     linear = linear.to(device)
 
-    (train_paras, valid_paras), (train_labels, valid_labels) = prepare(args.model_dir, "train")
-    test_paras, test_labels = prepare(args.model_dir, "validation")
+    (train_paras, valid_paras), (train_labels, valid_labels) = prepare(args.model_dir, "train", baseline=args.baseline)
+    test_paras, test_labels = prepare(args.model_dir, "validation", baseline=args.baseline)
     train_dataset = HotpotQADataset(train_paras, train_labels)
     eval_dataset = HotpotQADataset(valid_paras, valid_labels)
     test_dataset = HotpotQADataset(test_paras, test_labels)
-    data_collator = DataCollatorForMultipleChoice(tokenizer, padding='longest', max_length=512)
+    data_collator = DataCollatorForQA(tokenizer, padding='longest', max_length=512)
     train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.batch_size)
     eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
     test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
 
     model_name = args.model_dir.split('/')[-1]
     run_name=f'supp model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
+    if args.baseline: run_name = 'baseline ' + run_name
     args.run_name = run_name
 
     no_decay = ["bias", "LayerNorm.weight"]
@@ -261,7 +269,7 @@ def main():
                     if args.save_model:
                         model.save_pretrained(f"{args.output_model_dir}/{run_name}")
             model.train()
-            outs = run_model(model, linear, tokenizer, batch)
+            outs = run_model(model, linear, tokenizer, batch, baseline=args.baseline)
             loss = loss_fct(outs, batch["labels"])
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:

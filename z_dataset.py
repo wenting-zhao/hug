@@ -7,7 +7,7 @@ from transformers import AutoTokenizer
 from datasets import load_dataset
 random.seed(555)
 
-def preprocess_function(examples, tokenizer):
+def preprocess_function(examples, tokenizer, baseline):
     assert len(examples["context"]) == len(examples["labels"])
     paragraphs = []
     for context, labels, q in zip(examples["context"], examples["labels"], examples["question"]):
@@ -15,11 +15,18 @@ def preprocess_function(examples, tokenizer):
         sents = context["sentences"]
         p1 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[0]])
         p1 = f'{q} {tokenizer.sep_token} {t1}: {tokenizer.unk_token} {p1} {tokenizer.sep_token}'
-        p2 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[1]])
-        p2 = f'{t2}: {tokenizer.unk_token} {p2}'
-        p = f"{p1} {p2}"
-        paragraphs.append(p)
+        if baseline:
+            p2 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[1]])
+            p2 = f'{q} {tokenizer.sep_token} {t2}: {tokenizer.unk_token} {p2} {tokenizer.sep_token}'
+            paragraphs += [p1, p2]
+        else:
+            p2 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[1]])
+            p2 = f'{t2}: {tokenizer.unk_token} {p2}'
+            p = f"{p1} {p2}"
+            paragraphs.append(p)
     tokenized_paras = tokenizer(paragraphs, truncation=True)['input_ids']
+    if baseline:
+        tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
     #tokenized_paras = tokenizer(paragraphs)
     #lengths = [len(para) for para in tokenized_paras['input_ids'] if len(para) > 512]
     return tokenized_paras
@@ -78,16 +85,20 @@ def prepare(path, split, baseline=False):
     #    print(f"{key} supp facts per paragraph:", supp_cnt2[key])
     #for key in sorted(sent_cnt.keys()):
     #    print(f"{key} sentences in a paragraph:", sent_cnt[key])
+    if baseline:
+        name = f"cache/hotpotqa_baseline_supp_encodings.pkl"
+    else:
+        name = f"cache/hotpotqa_supp_encodings.pkl"
     if split == "train":
-        if os.path.isfile(f"cache/hotpotqa_supp_encodings.pkl"):
-            with open(f"cache/hotpotqa_supp_encodings.pkl", 'rb') as f:
+        if os.path.isfile(name):
+            with open(name, 'rb') as f:
                 paras = pickle.load(f)
         else:
-            paras = preprocess_function(data, tokenizer)
-            with open(f"cache/hotpotqa_supp_encodings.pkl", 'wb') as f:
+            paras = preprocess_function(data, tokenizer, baseline)
+            with open(name, 'wb') as f:
                 pickle.dump(paras, f)
     else:
-         paras = preprocess_function(data, tokenizer)
+         paras = preprocess_function(data, tokenizer, baseline)
     if split == "train": 
         order = list(range(len(labels)))
         random.shuffle(order)
