@@ -166,7 +166,7 @@ def evaluate(steps, args, model, linear, tok, dataloader, split, threshold=THRES
         results.append(eval_outs)
         labels.append(eval_batch["labels"])
     best_acc, best_t, best_preds = 0, 0, 0
-    for t in THRESHOLDS:
+    for t in threshold:
         acc = []
         for pred, ref in zip(results, labels):
             curr = pred.detach().clone()
