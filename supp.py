@@ -129,8 +129,8 @@ def run_model(model, linear, tok, batch, train=True):
     else:
         with torch.no_grad():
             outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
-    indices = (batch['input_ids'][:, 1:] == tok.unk_token_id).nonzero(as_tuple=False)
-    outs = outputs.last_hidden_state[:, 1:, :][indices[:, 0], indices[:, 1]]
+    indices = (batch['input_ids'] == tok.unk_token_id).nonzero(as_tuple=False)
+    outs = outputs.last_hidden_state[indices[:, 0], indices[:, 1]]
     outs = linear(outs)
     outs = torch.sigmoid(outs).view(-1)
     #final = []
