@@ -165,13 +165,16 @@ def sentence_level_prepare(path, split, baseline=False):
             tmp[t].append(sid)
         idx1 = get_index(tmp[name1], titles['sentences'][l[0]])
         idx2 = get_index(tmp[name2], titles['sentences'][l[1]])
-        sent_labels.append([idx1, idx2])
+        if baseline:
+            sent_labels.append([idx1, idx2])
+        else:
+            if idx1 == len(titles['sentences'][l[0]]) or idx2 == len(titles['sentences'][l[1]]):
+                sent_labels.append(idx1*idx2)
+            else:
+                sent_labels.append(idx1*len(titles['sentences'][l[0]])+idx2)
     data["labels"] = labels
 
-    if baseline:
-        name = f"cache/hotpotqa_baseline_sent_supp_encodings.pkl"
-    else:
-        name = f"cache/hotpotqa_sent_supp_encodings.pkl"
+    name = f"cache/hotpotqa_sent_supp_encodings.pkl"
     if split == "train":
         if os.path.isfile(name):
             with open(name, 'rb') as f:
