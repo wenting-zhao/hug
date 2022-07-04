@@ -62,7 +62,7 @@ class DataCollatorForQA:
         labels = [feature.pop(label_name) for feature in features]
         paras = [feature.pop("paras") for feature in features]
         if isinstance(paras[0][0], list):
-            paras = sum(paras, [])
+            paras = [p for ps in paras for p in ps]
         paras = [{"input_ids": x} for x in paras]
 
         batch = self.tokenizer.pad(
