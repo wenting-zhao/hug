@@ -6,6 +6,7 @@ import math
 from tqdm import tqdm
 import wandb
 from z_dataset import sentence_level_prepare, HotpotQADataset
+from utils import padding
 from datasets import load_metric
 from transformers import AutoModel
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -90,6 +91,8 @@ def get_args():
                         help="number of steps between each evaluation.")
     parser.add_argument("--epoch", '-epoch', default=10, type=int,
                         help="The number of epochs for fine-tuning.")
+    parser.add_argument("--max_paragraph_length", default=10, type=int,
+                        help="The maximum number of sentences allowed in a paragraph.")
     parser.add_argument("--model_dir", default="roberta-large", type=str,
                         help="The directory where the pretrained model will be loaded.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
@@ -117,6 +120,8 @@ def get_args():
         help="Number of updates steps to accumulate before performing a backward/update pass.",
     )
     args = parser.parse_args()
+    if args.baseline:
+        args.max_paragraph_length = 1000
     return args
 
 def mean_pooling(model_output, attention_mask):
@@ -139,6 +144,8 @@ def run_model(model, mlp, linear, batch, train=True, baseline=False):
     embs_groupby_example0 = []
     embs_groupby_example1 = []
     indices = []
+    indices0 = []
+    indices1 = []
     st = 0
     for i in range(len(batch['lengths'])):
         curr = []
@@ -156,20 +163,16 @@ def run_model(model, mlp, linear, batch, train=True, baseline=False):
         else:
             if i % 2 == 0:
                 embs_groupby_example0.append(curr)
+                indices0.append(len(curr))
             else:
                 embs_groupby_example1.append(curr)
+                indices1.append(len(curr))
         st = ed
     if baseline:
         indices = torch.tensor(indices).to(device)
         embs_groupby_example = torch.cat(embs_groupby_example, dim=0)
         outs = linear(embs_groupby_example).view(-1)
-        L = len(indices)
-        rows = torch.nn.functional.one_hot(indices)
-        cols = rows.cumsum(0)[torch.arange(L), indices] - 1
-        cols = torch.nn.functional.one_hot(cols)
-        outs = (outs[:, None, None] *
-                cols[:, None, :] *
-                rows[:, :, None]).sum(0)
+        outs = padding(indices, outs)
         outs = torch.cat([outs, torch.zeros(len(outs), 1).to(device)], dim=1)
     else:
         assert len(embs_groupby_example0) == len(embs_groupby_example1)
@@ -185,15 +188,23 @@ def run_model(model, mlp, linear, batch, train=True, baseline=False):
         sec_embs = torch.cat(sec_embs, dim=0)
         outs1 = mlp(sec_embs).view(-1)
         st = 0
+        idx = 0
+        outs = []
         indices = []
-        for i in range(len(prod_lens)):
-            ed = st + prod_lens[i]
-            first_i = outs0[st0:ed0]
-            sec_i = outs1[st1:ed1]
-            final.append(res_i)
-            indices += [i] * len(res_i)
-            st0 = ed0
-            st1 = ed1
+        for i in range(len(indices0)):
+            tmp = []
+            for _ in range(indices0[i]):
+                ed = st + indices1[i]
+                tmp.append(outs0[idx] * outs1[st:ed])
+                st = ed
+                idx += 1
+            tmp = torch.cat(tmp, dim=0)
+            indices += [i] * len(tmp)
+            outs.append(tmp)
+        outs = torch.cat(outs, dim=0)
+        indices = torch.tensor(indices).to(device)
+        outs = padding(indices, outs)
+        outs = torch.cat([outs, torch.zeros(len(outs), 1).to(device)], dim=1)
     return outs
 
 def evaluate(steps, args, model, mlp, linear, dataloader, split):
@@ -203,8 +214,8 @@ def evaluate(steps, args, model, mlp, linear, dataloader, split):
     acc = []
     for step, eval_batch in enumerate(dataloader):
         eval_outs = run_model(model, mlp, linear, eval_batch, train=False, baseline=args.baseline)
-        predictions = eval_outs.argmax(dim=-1).view(-1)
-        labels = eval_batch["labels"].view(-1)
+        predictions = eval_outs.argmax(dim=-1).view(-1, 1)
+        labels = eval_batch["labels"].view(-1, 1)
         if args.baseline:
             predictions = predictions.view(-1, 2)
             labels = labels.view(-1, 2)
@@ -239,8 +250,9 @@ def main():
             )
     mlp = mlp.to(device)
 
-    (train_paras, valid_paras), (train_labels, valid_labels) = sentence_level_prepare(args.model_dir, "train", baseline=args.baseline)
-    test_paras, test_labels = sentence_level_prepare(args.model_dir, "validation", baseline=args.baseline)
+    (train_paras, valid_paras), (train_labels, valid_labels) = \
+            sentence_level_prepare(args.model_dir, "train", baseline=args.baseline, threshold=args.max_paragraph_length)
+    test_paras, test_labels = sentence_level_prepare(args.model_dir, "validation", baseline=args.baseline, threshold=args.max_paragraph_length)
     train_dataset = HotpotQADataset(train_paras, train_labels)
     eval_dataset = HotpotQADataset(valid_paras, valid_labels)
     test_dataset = HotpotQADataset(test_paras, test_labels)
@@ -307,9 +319,9 @@ def main():
     best_valid = float('-inf')
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
-            if completed_steps % args.eval_steps == 0:# and completed_steps > 0:
+            if completed_steps % args.eval_steps == 0 and completed_steps > 0:
                 valid_acc = evaluate(completed_steps, args, model, mlp, linear, eval_dataloader, "Valid")
-                evaluate(completed_steps, args, model, mlp, linear, test_dataloader, "Test")
+                test_acc = evaluate(completed_steps, args, model, mlp, linear, test_dataloader, "Test")
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
