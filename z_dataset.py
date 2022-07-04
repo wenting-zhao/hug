@@ -172,7 +172,9 @@ def sentence_level_prepare(path, split, baseline=False, threshold=10):
         if baseline:
             sent_labels.append([idx1[0], idx2[0]])
         else:
-            if idx1 == max_combs or idx2 == max_combs:
+            # first two conditions handle # of sentences in a paragraph > threshold
+            # latter two conditions handle # of supporting facts > 3 in a paragraph
+            if idx1[0] == max_combs or idx2[0] == max_combs or idx1[0] == idx1[1] or idx2[0] == idx2[1]:
                 sent_labels.append(idx1[1]*idx2[1])
             else:
                 sent_labels.append(idx1[0]*idx2[1]+idx2[0])

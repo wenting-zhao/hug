@@ -6,7 +6,7 @@ import math
 from tqdm import tqdm
 import wandb
 from z_dataset import sentence_level_prepare, HotpotQADataset
-from utils import padding
+from utils import padding, padding_long
 from datasets import load_metric
 from transformers import AutoModel
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -93,6 +93,8 @@ def get_args():
                         help="The number of epochs for fine-tuning.")
     parser.add_argument("--max_paragraph_length", default=10, type=int,
                         help="The maximum number of sentences allowed in a paragraph.")
+    parser.add_argument("--max_matrix", default=5000, type=int,
+                        help="The largest n when doing matrix operation.")
     parser.add_argument("--model_dir", default="roberta-large", type=str,
                         help="The directory where the pretrained model will be loaded.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
@@ -129,7 +131,7 @@ def mean_pooling(model_output, attention_mask):
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
     return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
-def run_model(model, mlp, linear, batch, train=True, baseline=False):
+def run_model(model, mlp, linear, batch, train=True, baseline=False, max_n=10000):
     m = nn.Softmax(dim=-1)
     for key in batch:
         batch[key] = batch[key].to(device)
@@ -203,7 +205,11 @@ def run_model(model, mlp, linear, batch, train=True, baseline=False):
             outs.append(tmp)
         outs = torch.cat(outs, dim=0)
         indices = torch.tensor(indices).to(device)
-        outs = padding(indices, outs)
+        if len(outs) > max_n:
+            indices_long = [i*j for i, j in zip(indices0, indices1)]
+            outs = padding_long(indices_long, outs)
+        else:
+            outs = padding(indices, outs)
         outs = torch.cat([outs, torch.zeros(len(outs), 1).to(device)], dim=1)
     return outs
 
@@ -213,7 +219,7 @@ def evaluate(steps, args, model, mlp, linear, dataloader, split):
         results = []
     acc = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs = run_model(model, mlp, linear, eval_batch, train=False, baseline=args.baseline)
+        eval_outs = run_model(model, mlp, linear, eval_batch, train=False, baseline=args.baseline, max_n=args.max_matrix)
         predictions = eval_outs.argmax(dim=-1).view(-1, 1)
         labels = eval_batch["labels"].view(-1, 1)
         if args.baseline:
@@ -327,7 +333,7 @@ def main():
                     if args.save_model:
                         model.save_pretrained(f"{args.output_model_dir}/{run_name}")
             model.train()
-            outs = run_model(model, mlp, linear, batch, baseline=args.baseline)
+            outs = run_model(model, mlp, linear, batch, baseline=args.baseline, max_n=args.max_matrix)
             loss = loss_fct(outs, batch["labels"])
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
