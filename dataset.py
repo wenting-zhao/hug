@@ -7,6 +7,18 @@ import torch
 random.seed(555)
 
 
+def split_data(paras, labels):
+    order = list(range(len(labels)))
+    random.shuffle(order)
+    num = int(0.9*len(order))
+    train_indices = order[:num]
+    valid_indices = order[num:]
+    train_paras = [paras[i] for i in train_indices]
+    valid_paras = [paras[i] for i in valid_indices]
+    train_labels = [labels[i] for i in train_indices]
+    valid_labels = [labels[i] for i in valid_indices]
+    return (train_paras, valid_paras), (train_labels, valid_labels)
+
 def preprocess_paragraph_function(examples, tokenizer):
     paragraphs = [[s for s in i["sentences"]] for i in examples["context"]]
     paragraphs = [[' '.join(s) for s in i] for i in paragraphs]
@@ -57,18 +69,8 @@ def prepare_paragraphs(tokenizer, split, data, baseline=False):
         else:
             labels.append(ij2label[(l[0], l[1])])
     if split == "train": 
-        order = list(range(len(labels)))
-        random.shuffle(order)
-        num = int(0.9*len(order))
-        train_indices = order[:num]
-        valid_indices = order[num:]
-        train_paras = [paras[i] for i in train_indices]
-        valid_paras = [paras[i] for i in valid_indices]
-        train_labels = [labels[i] for i in train_indices]
-        valid_labels = [labels[i] for i in valid_indices]
-        return (train_paras, valid_paras), (train_labels, valid_labels)
-    else:
-        return paras, labels
+        paras, labels = split_data(paras, labels)
+    return paras, labels
 
 def preprocess_sentence_function(examples, tokenizer, baseline):
     assert len(examples["context"]) == len(examples["labels"])
@@ -177,18 +179,8 @@ def prepare_sentences(tokenizer, split, data, baseline=False):
     else:
          paras = preprocess_sentence_function(data, tokenizer, baseline)
     if split == "train": 
-        order = list(range(len(labels)))
-        random.shuffle(order)
-        num = int(0.9*len(order))
-        train_indices = order[:num]
-        valid_indices = order[num:]
-        train_paras = [paras[i] for i in train_indices]
-        valid_paras = [paras[i] for i in valid_indices]
-        train_labels = [sent_labels[i] for i in train_indices]
-        valid_labels = [sent_labels[i] for i in valid_indices]
-        return (train_paras, valid_paras), (train_labels, valid_labels)
-    else:
-        return paras, sent_labels
+        paras, labels = split_data(paras, labels)
+    return paras, labels
 
 def get_index(ref, ls, threshold):
     res = []
@@ -254,19 +246,30 @@ def prepare_individual_sentences(tokenizer, split, data, baseline=False, thresho
                 pickle.dump(paras, f)
     else:
          paras = sentence_level_preprocess_function(data, tokenizer, threshold)
+    if split == "train": 
+        paras, labels = split_data(paras, labels)
+    return paras, labels
+
+def preprocess_answer_function(examples, tokenizer):
+    pass
+
+def prepare_answers(tokenizer, split, data, baseline=False):
+    print("preparing HotpotQA")
+    data = data[split]
+
     if split == "train":
-        order = list(range(len(labels)))
-        random.shuffle(order)
-        num = int(0.9*len(order))
-        train_indices = order[:num]
-        valid_indices = order[num:]
-        train_paras = [paras[i] for i in train_indices]
-        valid_paras = [paras[i] for i in valid_indices]
-        train_labels = [sent_labels[i] for i in train_indices]
-        valid_labels = [sent_labels[i] for i in valid_indices]
-        return (train_paras, valid_paras), (train_labels, valid_labels)
+        if os.path.isfile(f"cache/hotpotqa_answer_encodings.pkl"):
+            with open(f"cache/hotpotqa_answer_encodings.pkl", 'rb') as f:
+                paras = pickle.load(f)
+        else:
+            paras = preprocess_paragraph_function(data, tokenizer)
+            with open(f"cache/hotpotqa_answer_encodings.pkl", 'wb') as f:
+                pickle.dump(paras, f)
     else:
-        return paras, sent_labels
+         paras = preprocess_paragraph_function(data, tokenizer)
+    if split == "train": 
+        paras, labels = split_data(paras, labels)
+    return paras, labels
 
 class HotpotQADataset(torch.utils.data.Dataset):
     def __init__(self, paras, labels):
