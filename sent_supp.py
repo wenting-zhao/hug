@@ -5,7 +5,7 @@ from typing import Optional, Union
 import math
 from tqdm import tqdm
 import wandb
-from dataset import sentence_level_prepare, HotpotQADataset
+from dataset import prepare_individual_sentences, HotpotQADataset
 from utils import load_hotpotqa, padding, padding_long
 from datasets import load_metric
 from transformers import AutoModel
@@ -258,9 +258,9 @@ def main():
 
     data = load_hotpotqa()
     (train_paras, valid_paras), (train_labels, valid_labels) = \
-            sentence_level_prepare(args.model_dir, "train", data, baseline=args.baseline, threshold=args.max_paragraph_length)
+            prepare_individual_sentences(tokenizer, "train", data, baseline=args.baseline, threshold=args.max_paragraph_length)
     test_paras, test_labels = \
-            sentence_level_prepare(args.model_dir, "validation", data, baseline=args.baseline, threshold=args.max_paragraph_length)
+            prepare_individual_sentences(tokenizer, "validation", data, baseline=args.baseline, threshold=args.max_paragraph_length)
     train_dataset = HotpotQADataset(train_paras, train_labels)
     eval_dataset = HotpotQADataset(valid_paras, valid_labels)
     test_dataset = HotpotQADataset(test_paras, test_labels)

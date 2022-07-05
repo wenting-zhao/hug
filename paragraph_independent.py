@@ -176,8 +176,8 @@ def main():
     linear = linear.to(device)
 
     data = load_hotpotqa()
-    (train_paras, valid_paras), (train_labels, valid_labels) = prepare_paragraphs(args.model_dir, "train", data, baseline=True)
-    test_paras, test_labels = prepare_paragraphs(args.model_dir, "validation", data, baseline=True)
+    (train_paras, valid_paras), (train_labels, valid_labels) = prepare_paragraphs(tokenizer, "train", data, baseline=True)
+    test_paras, test_labels = prepare_paragraphs(tokenizer, "validation", data, baseline=True)
     train_dataset = HotpotQADataset(train_paras, train_labels)
     eval_dataset = HotpotQADataset(valid_paras, valid_labels)
     test_dataset = HotpotQADataset(test_paras, test_labels)

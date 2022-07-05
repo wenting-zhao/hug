@@ -4,7 +4,6 @@ import pickle
 import random
 import os
 import torch
-from transformers import AutoTokenizer
 random.seed(555)
 
 
@@ -19,9 +18,8 @@ def preprocess_paragraph_function(examples, tokenizer):
     tokenized_paras = [tokenized_paras[i:i+10] for i in range(0, len(tokenized_paras), 10)]
     return tokenized_paras
 
-def prepare_paragraphs(path, split, data, baseline=False):
+def prepare_paragraphs(tokenizer, split, data, baseline=False):
     print("preparing HotpotQA")
-    tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
     data = data[split]
 
     if split == "train":
@@ -111,9 +109,8 @@ def sentence_level_preprocess_function(examples, tokenizer, threshold):
     tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
     return tokenized_paras
 
-def prepare_sentences(path, split, data, baseline=False):
+def prepare_sentences(tokenizer, split, data, baseline=False):
     print("preparing HotpotQA")
-    tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
     data = data[split][:]
 
     labels = []
@@ -210,9 +207,8 @@ def get_index(ref, ls, threshold):
         idx = (len(combs), len(combs))
     return idx
 
-def sentence_level_prepare(path, split, data, baseline=False, threshold=10):
+def prepare_individual_sentences(tokenizer, split, data, baseline=False, threshold=10):
     print("preparing HotpotQA")
-    tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
     data = data[split][:]
 
     labels = []
