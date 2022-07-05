@@ -16,7 +16,7 @@ def preprocess_function(examples, tokenizer):
     tokenized_paras = [tokenized_paras[i:i+10] for i in range(0, len(tokenized_paras), 10)]
     return tokenized_paras
 
-def prepare(path, split, data):
+def prepare(path, split, data, baseline=False):
     print("preparing HotpotQA")
     tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
     data = data[split]
