@@ -5,7 +5,7 @@ from typing import Optional, Union
 import math
 from tqdm import tqdm
 import wandb
-from z_dataset import prepare, HotpotQADataset
+from dataset import prepare_sentences, HotpotQADataset
 from datasets import load_metric
 from transformers import AutoModel
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -203,8 +203,8 @@ def main():
     linear = linear.to(device)
 
     data = load_hotpotqa()
-    (train_paras, valid_paras), (train_labels, valid_labels) = prepare(args.model_dir, "train", data, baseline=args.baseline)
-    test_paras, test_labels = prepare(args.model_dir, "validation", data, baseline=args.baseline)
+    (train_paras, valid_paras), (train_labels, valid_labels) = prepare_sentences(args.model_dir, "train", data, baseline=args.baseline)
+    test_paras, test_labels = prepare_sentences(args.model_dir, "validation", data, baseline=args.baseline)
     train_dataset = HotpotQADataset(train_paras, train_labels)
     eval_dataset = HotpotQADataset(valid_paras, valid_labels)
     test_dataset = HotpotQADataset(test_paras, test_labels)

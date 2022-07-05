@@ -5,7 +5,7 @@ from typing import Optional, Union
 import math
 from tqdm import tqdm
 import wandb
-from dataset import prepare, HotpotQADataset
+from dataset import prepare_paragraphs, HotpotQADataset
 from datasets import load_metric
 from transformers import AutoModel
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -79,7 +79,6 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--nolog', action='store_true')
     parser.add_argument('--save_model', action='store_true')
-    parser.add_argument('--save_results', action='store_true')
     parser.add_argument("--batch_size", '-b', default=1, type=int,
                         help="batch size per gpu.")
     parser.add_argument("--eval_batch_size", default=32, type=int,
@@ -91,8 +90,6 @@ def get_args():
     parser.add_argument("--model_dir", default="roberta-large", type=str,
                         help="The directory where the pretrained model will be loaded.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
-    parser.add_argument("--output_model_dir", default="./saved_models", type=str,
-                        help="The directory where the pretrained model will be saved.")
     parser.add_argument(
         "--warmup_ratio", type=float, default=0, help="Warmup ratio in the lr scheduler."
     )
@@ -122,7 +119,7 @@ def mean_pooling(model_output, attention_mask):
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
     return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
-def run_model(model, mlp, linear, batch, train=True):
+def run_model(model, linear, batch, train=True):
     m = nn.Softmax(dim=-1)
     bs = len(batch['labels'])
     num_choices = len(batch['input_ids'][0])
@@ -138,34 +135,30 @@ def run_model(model, mlp, linear, batch, train=True):
     sentence_embeddings = mean_pooling(outputs, batch["attention_mask"])
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
     sentence_embeddings = sentence_embeddings.view(bs, num_choices, -1)
-    single_outs = linear(sentence_embeddings).view(bs, -1)
-    single_outs = m(single_outs)
+    pairs = []
+    #for se in sentence_embeddings:
+    #    for i in range(num_choices):
+    #        for j in range(i+1, num_choices):
+    #            diff = torch.abs(se[i] - se[j])
+    #            concated = torch.concat((se[i], se[j], diff))
+    #            pairs.append(concated)
+    #pairs = torch.stack(pairs)
+    # justin turned the for loop above into the following batching
     combs = torch.combinations(torch.arange(num_choices))
     C = len(combs)
     paired = sentence_embeddings[:,combs,:]
     diff = torch.abs(paired[:,:,0] - paired[:,:,1])
     pairs = torch.cat([paired.view(bs,C,-1), diff], dim=-1).view(-1, 3*sentence_embeddings.shape[-1])
-    outs = mlp(pairs).view(bs, -1)
+    outs = linear(pairs).view(bs, -1)
     outs = m(outs)
-    res = []
-    st, ed = 0, 9
-    for i in range(9):
-        res.append(single_outs[:, i].view(bs, -1) * outs[:, st:ed])
-        st = ed
-        ed += (9-i-1)
-    res = torch.cat(res, dim=1)
     return outs
 
-def evaluate(steps, args, model, mlp, linear, dataloader, split):
+def evaluate(steps, args, model, linear, dataloader, split):
     metric = load_metric("accuracy")
     model.eval()
-    if args.save_results:
-        results = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs = run_model(model, mlp, linear, eval_batch, train=False)
+        eval_outs = run_model(model, linear, eval_batch, train=False)
         predictions = eval_outs.argmax(dim=-1)
-        if args.save_results:
-            results.append(eval_outs.cpu())
         metric.add_batch(
             predictions=predictions,
             references=eval_batch["labels"],
@@ -175,8 +168,6 @@ def evaluate(steps, args, model, mlp, linear, dataloader, split):
         wandb.log({
             "step": steps,
             f"{split} Acc": eval_metric})
-    if args.save_results:
-        torch.save(torch.cat(results, dim=0), f"logging/{args.run_name}|step-{steps}.pt")
     return eval_metric['accuracy']
 
 def main():
@@ -184,22 +175,12 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     model = AutoModel.from_pretrained(args.model_dir)
     model = model.to(device)
-    linear = nn.Linear(model.config.hidden_size, 1)
+    linear = nn.Linear(model.config.hidden_size*3, 1)
     linear = linear.to(device)
-    mlp = nn.Sequential(
-            nn.Linear(model.config.hidden_size*3, 512),
-            nn.ReLU(),
-            nn.Linear(512, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Linear(512, 1)
-            )
-    mlp = mlp.to(device)
 
     data = load_hotpotqa()
-    (train_paras, valid_paras), (train_labels, valid_labels) = prepare(args.model_dir, "train", data)
-    test_paras, test_labels = prepare(args.model_dir, "validation", data)
+    (train_paras, valid_paras), (train_labels, valid_labels) = prepare_paragraphs(args.model_dir, "train", data)
+    test_paras, test_labels = prepare_paragraphs(args.model_dir, "validation", data)
     train_dataset = HotpotQADataset(train_paras, train_labels)
     eval_dataset = HotpotQADataset(valid_paras, valid_labels)
     test_dataset = HotpotQADataset(test_paras, test_labels)
@@ -210,7 +191,6 @@ def main():
 
     model_name = args.model_dir.split('/')[-1]
     run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
-    args.run_name = run_name
 
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
@@ -220,14 +200,6 @@ def main():
         },
         {
             "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-        },
-        {
-            "params": [p for n, p in mlp.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": args.weight_decay,
-        },
-        {
-            "params": [p for n, p in mlp.named_parameters() if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0,
         },
         {
@@ -266,14 +238,14 @@ def main():
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if completed_steps % args.eval_steps == 0 and completed_steps > 0:
-                valid_acc = evaluate(completed_steps, args, model, mlp, linear, eval_dataloader, "Valid")
-                evaluate(completed_steps, args, model, mlp, linear, test_dataloader, "Test")
+                valid_acc = evaluate(completed_steps, args, model, linear, eval_dataloader, "Valid")
+                evaluate(completed_steps, args, model, linear, test_dataloader, "Test")
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
                         model.save_pretrained(f"{args.output_model_dir}/{run_name}")
             model.train()
-            outs = run_model(model, mlp, linear, batch)
+            outs = run_model(model, linear, batch)
             loss = loss_fct(outs, batch["labels"])
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:

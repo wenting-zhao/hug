@@ -5,7 +5,7 @@ from typing import Optional, Union
 import math
 from tqdm import tqdm
 import wandb
-from z_dataset import sentence_level_prepare, HotpotQADataset
+from dataset import sentence_level_prepare, HotpotQADataset
 from utils import load_hotpotqa, padding, padding_long
 from datasets import load_metric
 from transformers import AutoModel
