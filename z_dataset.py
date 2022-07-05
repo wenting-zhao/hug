@@ -5,7 +5,6 @@ import random
 import os
 import torch
 from transformers import AutoTokenizer
-from datasets import load_dataset
 random.seed(555)
 
 def preprocess_function(examples, tokenizer, baseline):
@@ -47,10 +46,10 @@ def sentence_level_preprocess_function(examples, tokenizer, threshold):
     tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
     return tokenized_paras
 
-def prepare(path, split, baseline=False):
+def prepare(path, split, data, baseline=False):
     print("preparing HotpotQA")
     tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
-    data = load_dataset('hotpot_qa', 'distractor')[split][:]
+    data = data[split][:]
 
     labels = []
     sent_labels = []
@@ -146,10 +145,10 @@ def get_index(ref, ls, threshold):
         idx = (len(combs), len(combs))
     return idx
 
-def sentence_level_prepare(path, split, baseline=False, threshold=10):
+def sentence_level_prepare(path, split, data, baseline=False, threshold=10):
     print("preparing HotpotQA")
     tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
-    data = load_dataset('hotpot_qa', 'distractor')[split][:]
+    data = data[split][:]
 
     labels = []
     sent_labels = []

@@ -1,5 +1,9 @@
+from datasets import load_dataset
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def load_hotpotqa():
+    return load_dataset('hotpot_qa', 'distractor')
 
 def padding(indices, values):
     L = len(indices)

@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch import nn
 import wandb
+from utils import load_hotpotqa
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -174,8 +175,9 @@ def main():
     linear = nn.Linear(model.config.hidden_size, 1)
     linear = linear.to(device)
 
-    (train_paras, valid_paras), (train_labels, valid_labels) = prepare(args.model_dir, "train", baseline=True)
-    test_paras, test_labels = prepare(args.model_dir, "validation", baseline=True)
+    data = load_hotpotqa()
+    (train_paras, valid_paras), (train_labels, valid_labels) = prepare(args.model_dir, "train", data, baseline=True)
+    test_paras, test_labels = prepare(args.model_dir, "validation", data, baseline=True)
     train_dataset = HotpotQADataset(train_paras, train_labels)
     eval_dataset = HotpotQADataset(valid_paras, valid_labels)
     test_dataset = HotpotQADataset(test_paras, test_labels)
