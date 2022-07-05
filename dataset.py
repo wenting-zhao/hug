@@ -7,17 +7,18 @@ import torch
 random.seed(555)
 
 
-def split_data(paras, labels):
-    order = list(range(len(labels)))
+def split_data(*lists):
+    order = list(range(len(lists[0])))
     random.shuffle(order)
     num = int(0.9*len(order))
-    train_indices = order[:num]
-    valid_indices = order[num:]
-    train_paras = [paras[i] for i in train_indices]
-    valid_paras = [paras[i] for i in valid_indices]
-    train_labels = [labels[i] for i in train_indices]
-    valid_labels = [labels[i] for i in valid_indices]
-    return (train_paras, valid_paras), (train_labels, valid_labels)
+    res = []
+    for l in lists:
+        train_indices = order[:num]
+        valid_indices = order[num:]
+        x = [l[i] for i in train_indices]
+        y = [l[i] for i in valid_indices]
+        res.append((x, y))
+    return res
 
 def preprocess_paragraph_function(examples, tokenizer):
     paragraphs = [[s for s in i["sentences"]] for i in examples["context"]]
@@ -173,14 +174,14 @@ def prepare_sentences(tokenizer, split, data, baseline=False):
             with open(name, 'rb') as f:
                 paras = pickle.load(f)
         else:
-            paras = preprocess_function(data, tokenizer, baseline)
+            paras = preprocess_sentence_function(data, tokenizer, baseline)
             with open(name, 'wb') as f:
                 pickle.dump(paras, f)
     else:
          paras = preprocess_sentence_function(data, tokenizer, baseline)
     if split == "train": 
-        paras, labels = split_data(paras, labels)
-    return paras, labels
+        paras, sent_labels = split_data(paras, sent_labels)
+    return paras, sent_labels
 
 def get_index(ref, ls, threshold):
     res = []
@@ -247,29 +248,67 @@ def prepare_individual_sentences(tokenizer, split, data, baseline=False, thresho
     else:
          paras = sentence_level_preprocess_function(data, tokenizer, threshold)
     if split == "train": 
-        paras, labels = split_data(paras, labels)
-    return paras, labels
+        paras, sent_labels = split_data(paras, sent_labels)
+    return paras, sent_labels
 
-def preprocess_answer_function(examples, tokenizer):
-    pass
+def preprocess_answer_function(examples, tokenizer, threshold):
+    lengths = []
+    slengths = []
+    sents = []
+    indices = []
+    for i in range(len(examples['context'])):
+        curr_indices = dict()
+        for j in range(len(examples['context'][i]['sentences'])):
+            curr = examples['context'][i]['sentences'][j][:threshold]
+            rang = range(len(curr))
+            rang_combs = list(combinations(rang, r=1)) + list(combinations(rang, r=2)) + list(combinations(rang, r=3))
+            curr_indices[j] = rang_combs
+            combs = list(combinations(curr, r=1)) + list(combinations(curr, r=2)) + list(combinations(curr, r=3))
+            combs = [examples["question"][i] + f' {tokenizer.sep_token} ' + ' '.join(c) for c in combs]
+            sents += combs
+            lengths.append(len(combs))
+        slengths.append(j+1)
+        indices.append(curr_indices)
+    answers = [a for a in examples['answer']]
+    lengths.insert(0, 0)
+    for i in range(1, len(lengths)):
+        lengths[i] += lengths[i-1]
+    slengths.insert(0, 0)
+    for i in range(1, len(slengths)):
+        slengths[i] += slengths[i-1]
+    tokenized_sents = tokenizer(sents, truncation=True)['input_ids']
+    tokenized_answers = tokenizer(answers, truncation=True)['input_ids']
+    tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
+    tokenized_sents = [tokenized_sents[slengths[i]:slengths[i+1]] for i in range(len(slengths)-1)]
+    final = []
+    for i, sent in zip(indices, tokenized_sents):
+        curr = dict()
+        for key in i.keys():
+            sub_curr = dict()
+            for j, subkey in enumerate(i[key]):
+                sub_curr[subkey] = sent[key][j]
+            curr[key] = sub_curr
+        final.append(curr)
+    assert len(tokenized_answers) == len(tokenized_sents)
+    return tokenized_sents, tokenized_answers
 
-def prepare_answers(tokenizer, split, data, baseline=False):
+def prepare_answers(tokenizer, split, data, threshold=10):
     print("preparing HotpotQA")
-    data = data[split]
+    data = data[split][:1000]
 
     if split == "train":
         if os.path.isfile(f"cache/hotpotqa_answer_encodings.pkl"):
             with open(f"cache/hotpotqa_answer_encodings.pkl", 'rb') as f:
-                paras = pickle.load(f)
+                sents, answers = pickle.load(f)
         else:
-            paras = preprocess_paragraph_function(data, tokenizer)
+            sents, answers = preprocess_paragraph_function(data, tokenizer, threshold)
             with open(f"cache/hotpotqa_answer_encodings.pkl", 'wb') as f:
-                pickle.dump(paras, f)
+                pickle.dump((sents, answers), f)
     else:
-         paras = preprocess_paragraph_function(data, tokenizer)
+        sents, answers = preprocess_answer_function(data, tokenizer, threshold)
     if split == "train": 
-        paras, labels = split_data(paras, labels)
-    return paras, labels
+        sents, answers = split_data(sents, answers, indices)
+    return sents, answers
 
 class HotpotQADataset(torch.utils.data.Dataset):
     def __init__(self, paras, labels):
