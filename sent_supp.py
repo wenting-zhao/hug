@@ -51,7 +51,6 @@ class DataCollatorForMultipleChoice:
     pad_to_multiple_of: Optional[int] = None
 
     def __call__(self, features):
-        batch_size = len(features)
         label_name = "label" if "label" in features[0].keys() else "labels"
         labels = [feature.pop(label_name) for feature in features]
         paras = [feature.pop("paras") for feature in features]

@@ -289,25 +289,25 @@ def preprocess_answer_function(examples, tokenizer, threshold):
                 sub_curr[subkey] = sent[key][j]
             curr[key] = sub_curr
         final.append(curr)
-    assert len(tokenized_answers) == len(tokenized_sents)
-    return tokenized_sents, tokenized_answers
+    assert len(final) == len(tokenized_sents)
+    return final, tokenized_answers
 
 def prepare_answers(tokenizer, split, data, threshold=10):
     print("preparing HotpotQA")
-    data = data[split][:1000]
+    data = data[split]
 
     if split == "train":
         if os.path.isfile(f"cache/hotpotqa_answer_encodings.pkl"):
             with open(f"cache/hotpotqa_answer_encodings.pkl", 'rb') as f:
                 sents, answers = pickle.load(f)
         else:
-            sents, answers = preprocess_paragraph_function(data, tokenizer, threshold)
+            sents, answers = preprocess_answer_function(data, tokenizer, threshold)
             with open(f"cache/hotpotqa_answer_encodings.pkl", 'wb') as f:
                 pickle.dump((sents, answers), f)
     else:
         sents, answers = preprocess_answer_function(data, tokenizer, threshold)
     if split == "train": 
-        sents, answers = split_data(sents, answers, indices)
+        sents, answers = split_data(sents, answers)
     return sents, answers
 
 class HotpotQADataset(torch.utils.data.Dataset):
