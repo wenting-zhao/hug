@@ -1,6 +1,9 @@
 import argparse
 from datasets import load_dataset
 import torch
+from torch import nn
+from torch.optim import AdamW
+from transformers import get_scheduler
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_hotpotqa():
@@ -82,3 +85,46 @@ def get_args():
     if args.baseline:
         args.max_paragraph_length = 1000
     return args
+
+def prepare_optim_and_scheduler(all_layers, args):
+    no_decay = ["bias", "LayerNorm.weight"]
+    optimizer_grouped_parameters = []
+    for layer in all_layers:
+        curr = [
+            {
+                "params": [p for n, p in layer.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": args.weight_decay,
+            },
+            {
+                "params": [p for n, p in layer.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer_grouped_parameters += curr
+
+    optim = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+    lr_scheduler = get_scheduler(
+        name=args.lr_scheduler_type,
+        optimizer=optim,
+        num_warmup_steps=int(args.warmup_ratio*args.max_train_steps),
+        num_training_steps=args.max_train_steps,
+    )
+    return optim, lr_scheduler
+
+def prepare_linear(size):
+    linear = nn.Linear(size, 1)
+    linear = linear.to(device)
+    return linear
+
+def prepare_mlp(size):
+    mlp = nn.Sequential(
+            nn.Linear(size, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1)
+            )
+    mlp = mlp.to(device)
+    return mlp

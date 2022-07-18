@@ -17,6 +17,7 @@ from torch.optim import AdamW
 from torch import nn
 import wandb
 from utils import load_hotpotqa, get_args
+from utils import prepare_optim_and_scheduler
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -119,6 +120,18 @@ def evaluate(steps, args, model, tok, dataloader, split):
         torch.save(results, f"logging/{args.run_name}|step-{steps}.pt")
     return eval_metric['exact_match']
 
+def prepare_dataloader(data, tok, args):
+    (train_paras, valid_paras), (train_labels, valid_labels) = prepare_answers(tok, "train", data, threshold=args.max_paragraph_length)
+    test_paras, test_labels = prepare_answers(tok, "validation", data, threshold=args.max_paragraph_length)
+    train_dataset = HotpotQADataset(train_paras, train_labels)
+    eval_dataset = HotpotQADataset(valid_paras, valid_labels)
+    test_dataset = HotpotQADataset(test_paras, test_labels)
+    data_collator = DataCollatorForQA(tok, padding='longest', max_length=512)
+    train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.batch_size)
+    eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
+    test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
+    return train_dataloader, eval_dataloader, test_dataloader
+
 def main():
     args = get_args()
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
@@ -126,42 +139,16 @@ def main():
     model = model.to(device)
 
     data = load_hotpotqa()
-    (train_paras, valid_paras), (train_labels, valid_labels) = prepare_answers(tokenizer, "train", data, threshold=args.max_paragraph_length)
-    test_paras, test_labels = prepare_answers(tokenizer, "validation", data, threshold=args.max_paragraph_length)
-    train_dataset = HotpotQADataset(train_paras, train_labels)
-    eval_dataset = HotpotQADataset(valid_paras, valid_labels)
-    test_dataset = HotpotQADataset(test_paras, test_labels)
-    data_collator = DataCollatorForQA(tokenizer, padding='longest', max_length=512)
-    train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.batch_size)
-    eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
-    test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
+    train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(data, tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
     run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
     args.run_name = run_name
 
-    no_decay = ["bias", "LayerNorm.weight"]
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": args.weight_decay,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-        },
-    ]
-    optim = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
-
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     args.max_train_steps = args.epoch * num_update_steps_per_epoch
     total_batch_size = args.batch_size * args.gradient_accumulation_steps
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optim,
-        num_warmup_steps=int(args.warmup_ratio*args.max_train_steps),
-        num_training_steps=args.max_train_steps,
-    )
+    optim, lr_scheduler = prepare_optim_and_scheduler([model], args)
 
     progress_bar = tqdm(range(args.max_train_steps))
     completed_steps = 0
@@ -176,7 +163,7 @@ def main():
     best_valid = float('-inf')
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
-            if completed_steps % args.eval_steps == 0:# and completed_steps > 0:
+            if completed_steps % args.eval_steps == 0 and completed_steps > 0:
                 valid_acc = evaluate(completed_steps, args, model, tokenizer, eval_dataloader, "Valid")
                 evaluate(completed_steps, args, model, tokenizer, test_dataloader, "Test")
                 if valid_acc > best_valid:

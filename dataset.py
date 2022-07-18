@@ -292,9 +292,9 @@ def preprocess_answer_function(examples, tokenizer, threshold):
     assert len(final) == len(tokenized_sents)
     return final, tokenized_answers
 
-def prepare_answers(tokenizer, split, data, threshold=10):
+def prepare_answers(tokenizer, split, data, threshold=10, baseline=False):
     print("preparing HotpotQA")
-    data = data[split]
+    data = data[split][:100]
 
     if split == "train":
         if os.path.isfile(f"cache/hotpotqa_answer_encodings.pkl"):
