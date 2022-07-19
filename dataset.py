@@ -4,11 +4,11 @@ import pickle
 import random
 import os
 import torch
-random.seed(555)
 
 
 def split_data(*lists):
     order = list(range(len(lists[0])))
+    random.seed(555)
     random.shuffle(order)
     num = int(0.9*len(order))
     res = []
@@ -20,11 +20,18 @@ def split_data(*lists):
         res.append((x, y))
     return res
 
+def correct_format(ps):
+    if len(ps) < 10:
+        out = ps + ["none"] * (10 - len(ps))
+    elif len(ps) > 10:
+        out = ps[:10]
+    return out
+
 def preprocess_paragraph_function(examples, tokenizer):
     paragraphs = [[s for s in i["sentences"]] for i in examples["context"]]
+    paragraphs = [correct_format(ps) if len(ps) != 10 else ps for ps in paragraphs]
     paragraphs = [[' '.join(s) for s in i] for i in paragraphs]
-    questions = [[q] * 10 for i, q in enumerate(examples["question"]) if len(paragraphs[i]) == 10]
-    paragraphs = [p for p in paragraphs if len(p) == 10]
+    questions = [[q] * 10 for i, q in enumerate(examples["question"])]
     paragraphs = [p for ps in paragraphs for p in ps]
     questions = [q for qs in questions for q in qs]
     tokenized_paras = tokenizer(questions, paragraphs, truncation=True)['input_ids']
@@ -32,7 +39,7 @@ def preprocess_paragraph_function(examples, tokenizer):
     return tokenized_paras
 
 def prepare_paragraphs(tokenizer, split, data, baseline=False):
-    print("preparing HotpotQA")
+    print("preparing paragraphs")
     data = data[split]
 
     if split == "train":
@@ -55,7 +62,6 @@ def prepare_paragraphs(tokenizer, split, data, baseline=False):
     for title_label, titles in zip(data['supporting_facts'], data['context']):
         title_label = title_label["title"]
         titles = titles["title"]
-        if len(titles) != 10: continue
         l = []
         for i in range(len(titles)):
             if titles[i] in title_label:
@@ -73,28 +79,45 @@ def prepare_paragraphs(tokenizer, split, data, baseline=False):
         paras, labels = split_data(paras, labels)
     return paras, labels
 
-def preprocess_sentence_function(examples, tokenizer, baseline):
+def preprocess_sentence_function(examples, tokenizer, baseline, unsup):
     assert len(examples["context"]) == len(examples["labels"])
     paragraphs = []
-    for context, labels, q in zip(examples["context"], examples["labels"], examples["question"]):
-        t1, t2 = context["title"][labels[0]], context["title"][labels[1]]
-        sents = context["sentences"]
-        p1 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[0]])
-        p1 = f'{q} {tokenizer.sep_token} {t1}: {tokenizer.unk_token} {p1} {tokenizer.sep_token}'
+    if unsup:
+        for context, q in zip(examples["context"], examples["question"]):
+            ts = context["title"]
+            sents = context["sentences"]
+            if len(ts) != 10:
+                ts = correct_format(ts)
+                sents = correct_format(sents)
+            ps = []
+            for i in range(len(sents)):
+                t = ts[i]
+                p = f' {tokenizer.unk_token}'.join(sents[i])
+                p = f'{q} {tokenizer.sep_token} {t}: {tokenizer.unk_token} {p} {tokenizer.sep_token}'
+                ps.append(p)
+            paragraphs += ps
+        tokenized_paras = tokenizer(paragraphs, truncation=True)['input_ids']
+        tokenized_paras = [tokenized_paras[i:i+10] for i in range(0, len(tokenized_paras), 10)]
+    else:
+        for context, labels, q in zip(examples["context"], examples["labels"], examples["question"]):
+            t1, t2 = context["title"][labels[0]], context["title"][labels[1]]
+            sents = context["sentences"]
+            p1 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[0]])
+            p1 = f'{q} {tokenizer.sep_token} {t1}: {tokenizer.unk_token} {p1} {tokenizer.sep_token}'
+            if baseline:
+                p2 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[1]])
+                p2 = f'{q} {tokenizer.sep_token} {t2}: {tokenizer.unk_token} {p2} {tokenizer.sep_token}'
+                paragraphs += [p1, p2]
+            else:
+                p2 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[1]])
+                p2 = f'{t2}: {tokenizer.unk_token} {p2}'
+                p = f"{p1} {p2}"
+                paragraphs.append(p)
+        tokenized_paras = tokenizer(paragraphs, truncation=True)['input_ids']
         if baseline:
-            p2 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[1]])
-            p2 = f'{q} {tokenizer.sep_token} {t2}: {tokenizer.unk_token} {p2} {tokenizer.sep_token}'
-            paragraphs += [p1, p2]
-        else:
-            p2 = f' {tokenizer.unk_token}'.join(context["sentences"][labels[1]])
-            p2 = f'{t2}: {tokenizer.unk_token} {p2}'
-            p = f"{p1} {p2}"
-            paragraphs.append(p)
-    tokenized_paras = tokenizer(paragraphs, truncation=True)['input_ids']
-    if baseline:
-        tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
-    #tokenized_paras = tokenizer(paragraphs)
-    #lengths = [len(para) for para in tokenized_paras['input_ids'] if len(para) > 512]
+            tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
+        #tokenized_paras = tokenizer(paragraphs)
+        #lengths = [len(para) for para in tokenized_paras['input_ids'] if len(para) > 512]
     return tokenized_paras
 
 def sentence_level_preprocess_function(examples, tokenizer, threshold):
@@ -112,9 +135,10 @@ def sentence_level_preprocess_function(examples, tokenizer, threshold):
     tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
     return tokenized_paras
 
-def prepare_sentences(tokenizer, split, data, baseline=False):
-    print("preparing HotpotQA")
-    data = data[split][:]
+def prepare_sentences(tokenizer, split, data, baseline=False, unsup=False):
+    assert (baseline is False) or (unsup is False)
+    print("preparing sentences")
+    data = data[split]
 
     labels = []
     sent_labels = []
@@ -167,18 +191,21 @@ def prepare_sentences(tokenizer, split, data, baseline=False):
     #    print(f"{key} sentences in a paragraph:", sent_cnt[key])
     if baseline:
         name = f"cache/hotpotqa_baseline_supp_encodings.pkl"
+    elif unsup:
+        name = f"cache/hotpotqa_all_supp_encodings.pkl"
     else:
         name = f"cache/hotpotqa_supp_encodings.pkl"
+
     if split == "train":
         if os.path.isfile(name):
             with open(name, 'rb') as f:
                 paras = pickle.load(f)
         else:
-            paras = preprocess_sentence_function(data, tokenizer, baseline)
+            paras = preprocess_sentence_function(data, tokenizer, baseline, unsup)
             with open(name, 'wb') as f:
                 pickle.dump(paras, f)
     else:
-         paras = preprocess_sentence_function(data, tokenizer, baseline)
+         paras = preprocess_sentence_function(data, tokenizer, baseline, unsup)
     if split == "train": 
         paras, sent_labels = split_data(paras, sent_labels)
     return paras, sent_labels
@@ -201,7 +228,7 @@ def get_index(ref, ls, threshold):
     return idx
 
 def prepare_individual_sentences(tokenizer, split, data, baseline=False, threshold=10):
-    print("preparing HotpotQA")
+    print("preparing individual sentences")
     data = data[split][:]
 
     labels = []
@@ -293,8 +320,8 @@ def preprocess_answer_function(examples, tokenizer, threshold):
     return final, tokenized_answers
 
 def prepare_answers(tokenizer, split, data, threshold=10, baseline=False):
-    print("preparing HotpotQA")
-    data = data[split][:100]
+    print("preparing answers")
+    data = data[split]
 
     if split == "train":
         if os.path.isfile(f"cache/hotpotqa_answer_encodings.pkl"):
@@ -310,6 +337,33 @@ def prepare_answers(tokenizer, split, data, threshold=10, baseline=False):
         sents, answers = split_data(sents, answers)
     return sents, answers
 
+def prepare_pipeline(tokenizer, data, para_ind=False, sent_ind=True, threshold=10):
+    print("preparing HotpotQA")
+    out = dict()
+    out["train"] = dict()
+    out["valid"] = dict()
+    out["test"] = dict()
+    paras, para_labels = prepare_paragraphs(tokenizer, "train", data)
+    sents, sent_labels = prepare_sentences(tokenizer, "train", data, unsup=True)
+    supps, answ_labels = prepare_answers(tokenizer, "train", data, threshold=threshold)
+    out["train"]["paras"] = paras[0]
+    out["valid"]["paras"] = paras[1]
+    out["train"]["para_labels"] = para_labels[0]
+    out["valid"]["para_labels"] = para_labels[1]
+    out["train"]["sents"] = sents[0]
+    out["valid"]["sents"] = sents[1]
+    out["train"]["sent_labels"] = sent_labels[0]
+    out["valid"]["sent_labels"] = sent_labels[1]
+    out["train"]["supps"] = supps[0]
+    out["valid"]["supps"] = supps[1]
+    out["train"]["answ_labels"] = answ_labels[0]
+    out["valid"]["answ_labels"] = answ_labels[1]
+    out["test"]["paras"], out["test"]["para_labels"] = prepare_paragraphs(tokenizer, "validation", data)
+    out["test"]["sents"], out["test"]["sent_labels"] = prepare_sentences(tokenizer, "validation", data, unsup=True)
+    out["test"]["supps"], out["test"]["answ_labels"] = prepare_answers(tokenizer, "validation", data, threshold=threshold)
+    assert len(out["train"]["paras"]) == len(out["train"]["sents"]) == len(out["train"]["answ_labels"])
+    return out
+
 class HotpotQADataset(torch.utils.data.Dataset):
     def __init__(self, paras, labels):
         self.paras, self.labels = paras, labels
@@ -322,3 +376,25 @@ class HotpotQADataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.labels)
+
+class UnsupHotpotQADataset(torch.utils.data.Dataset):
+    def __init__(self, data):
+        self.paras = data["paras"]
+        self.plabels = data["para_labels"]
+        self.sents = data["sents"]
+        self.slabels = data["sent_labels"]
+        self.supps = data["supps"]
+        self.answs = data["answ_labels"]
+
+    def __getitem__(self, idx):
+        item = dict()
+        item["paras"] = self.paras[idx]
+        item["para_labels"] = self.plabels[idx]
+        item["sents"] = self.sents[idx]
+        item["sent_labels"] = self.slabels[idx]
+        item["supps"] = self.supps[idx]
+        item["answs"] = self.answs[idx]
+        return item
+
+    def __len__(self):
+        return len(self.plabels)
