@@ -288,14 +288,12 @@ def prepare_individual_sentences(tokenizer, split, data, baseline=False, thresho
 def preprocess_answer_function(examples, tokenizer):
     lengths = []
     sents = []
-    for i in range(len(examples['context'])):
-        curr_indices = dict()
-        if len(examples['context'][i]['sentences']) != 10:
-            examples['context'][i]['sentences'] = correct_format(examples['context'][i]['sentences'])
-        for j in range(len(examples['context'][i]['sentences'])):
-            curr = examples['context'][i]['sentences'][j]
-            rang = range(len(curr))
-            curr_indices[j] = rang
+    contexts = [c for c in examples['context']]
+    for i in range(len(contexts)):
+        if len(contexts[i]['sentences']) != 10:
+            contexts[i]['sentences'] = correct_format(contexts[i]['sentences'])
+        for j in range(len(contexts[i]['sentences'])):
+            curr = contexts[i]['sentences'][j]
             sents += curr
             lengths.append(len(curr))
     answers = [a for a in examples['answer']]
