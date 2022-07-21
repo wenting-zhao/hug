@@ -125,16 +125,20 @@ def run_para_model(layers, outputs, attention_mask, bs, num_choices):
     res = torch.cat(res, dim=1)
     return outs
 
-def process_para_outs(pouts, lm_outputs, raw_input_ids, bs, num_choices):
+def process_para_outs(pouts, lm_outputs, raw_input_ids, bs, num_choices, max_p):
     para_preds = pouts.argmax(dim=-1)
     ijs = torch.stack([label2ij[x] for x in para_preds])
     _, seq_len, emb_len = lm_outputs[0].shape
     ids = torch.arange(bs)[:, None]
     sent_in = lm_outputs[0].view(bs, num_choices, seq_len, emb_len)
-    sent_in = sent_in[ids, ijs]
-    input_ids = raw_input_ids[ids, ijs]
-    input_ids = input_ids.view(bs*2, seq_len)
-    sent_in = sent_in.view(bs*2, seq_len, -1)
+    if max_p:
+        sent_in = sent_in[ids, ijs]
+        input_ids = raw_input_ids[ids, ijs]
+        input_ids = input_ids.view(bs*2, seq_len)
+        sent_in = sent_in.view(bs*2, seq_len, -1)
+    else:
+        input_ids = raw_input_ids.view(bs*10, seq_len)
+        sent_in = sent_in.view(bs*10, seq_len, -1)
     return input_ids, sent_in, ijs
 
 def run_sent_model(linear, tok, input_ids, embs, labels):
@@ -154,21 +158,39 @@ def run_sent_model(linear, tok, input_ids, embs, labels):
     #    outs = torch.cat([outs, torch.zeros(labels.shape[0], labels.shape[1]-outs.shape[1]).to(device)], dim=1)
     return outs
 
-def process_sent_outs(souts):
-    sent_preds = souts.argmax(dim=-1)
-    sent_preds = sent_preds.view(-1, 2, 1)
-    return sent_preds
+def process_sent_outs(souts, max_p):
+    out = souts.max(dim=-1)
+    values, sent_preds = out
+    if max_p:
+        sent_preds = sent_preds.view(-1, 2, 1)
+        values = values.view(-1, 2, 1)
+    else:
+        sent_preds = sent_preds.view(-1, 10, 1)
+        values = values.view(-1, 10, 1)
+    return values, sent_preds
 
-def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices):
+def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, max_p):
     out = []
-    for c, pidx, sidx in zip(contexts, para_indices, sent_indices):
-        q, supp = c
-        c1, c2 = [], []
-        for j in sidx[0]:
-            c1 += supp[pidx[0]][j]
-        for j in sidx[1]:
-            c2 += supp[pidx[1]][j]
-        out.append(q+c1+c2)
+    if max_p:
+        for c, pidx, sidx in zip(contexts, para_indices, sent_indices):
+            q, supp = c
+            c1, c2 = [], []
+            for j in sidx[0]:
+                c1 += supp[pidx[0]][j]
+            for j in sidx[1]:
+                c2 += supp[pidx[1]][j]
+            out.append(q+c1+c2)
+    else:
+        for i, c in enumerate(contexts):
+            q, supp = c
+            for pair in label2ij:
+                c1, c2 = [], []
+                p1, p2 = pair
+                for j in sent_indices[i][p1]:
+                    c1 += supp[p1][j]
+                for j in sent_indices[i][p2]:
+                    c1 += supp[p2][j]
+                out.append(q+c1+c2)
     out = [{"input_ids": x} for x in out]
     out = tokenizer.pad(
         out,
@@ -177,6 +199,9 @@ def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices):
         return_tensors="pt",
     )
 
+    if not max_p:
+        raw_answers = [[x] * len(label2ij) for x in raw_answers]
+        raw_answers = [x for sub in raw_answers for x in sub]
     raw_answers = [{"input_ids": x} for x in raw_answers]
     answers = tokenizer.pad(
         raw_answers,
@@ -196,7 +221,8 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
             outputs = model.generate(input_ids, num_beams=2, min_length=1, max_length=20)
     return outputs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, train=True):
+    if not train: max_p = True
     for key in batch:
         if key != "contexts" and key != "answers":
             batch[key] = batch[key].to(device)
@@ -204,13 +230,27 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, train=Tr
     num_choices = len(batch['input_ids'][0])
     lm_outputs, attention_mask = run_lm(layers[0], batch, bs, num_choices, train=train)
     pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, num_choices)
-    input_ids, sent_in, para_ids = process_para_outs(pouts, lm_outputs, batch['input_ids'], bs, num_choices)
+    input_ids, sent_in, para_ids = process_para_outs(
+        pouts, lm_outputs, batch['input_ids'], bs, num_choices, max_p=max_p)
     sent_out = run_sent_model(layers[-1], tokenizer, input_ids, sent_in, batch['slabels'])
-    sent_idx = process_sent_outs(sent_out)
+    sent_values, sent_idx = process_sent_outs(sent_out, max_p=max_p)
+    combs = torch.combinations(torch.arange(num_choices))
+    C = len(combs)
+    paired = sent_values[:,combs]
+    sent_product = paired[:,:,0] * paired[:,:,1]
+    sent_product = sent_product.view(bs, C)
     answer_in, answer_attn, labels = get_relevant(
-            answer_tokenizer, batch["contexts"], batch['answers'], para_ids.tolist(), sent_idx.tolist())
+            answer_tokenizer, batch["contexts"], batch['answers'],
+            para_ids.tolist(), sent_idx.tolist(), max_p=max_p)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
-    return answ_out, para_ids, sent_idx
+    if max_p:
+        loss = answ_out.loss.mean()
+    else:
+        loss = answ_out.loss.reshape(bs, len(label2ij), -1).mean(dim=-1)
+        loss -= torch.log(pouts)
+        loss -= torch.log(sent_product)
+        loss = loss.mean()
+    return answ_out, para_ids, sent_idx, loss
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     exact_match = load_metric("exact_match")
@@ -220,7 +260,8 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     para_acc = []
     for step, eval_batch in enumerate(dataloader):
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
-        eval_outs, para_ids, sent_ids = run_model(eval_batch, layers, answ_model, tok, answ_tok, train=False)
+        eval_outs, para_ids, sent_ids, _ = run_model(
+                eval_batch, layers, answ_model, tok, answ_tok, max_p=args.max_p, train=False)
         preds = tok.batch_decode(eval_outs, skip_special_tokens=True)
         exact_match.add_batch(
             predictions=preds,
@@ -286,8 +327,7 @@ def main():
                         all_layers[0].save_pretrained(f"{args.output_model_dir}/{run_name}")
                 all_layers[0].train()
                 answer_model.train()
-            answ, _, _ = run_model(batch, all_layers, answer_model, tokenizer, answer_tokenizer)
-            loss = answ.loss
+            answ, _, _, loss = run_model(batch, all_layers, answer_model, tokenizer, answer_tokenizer, max_p=args.max_p)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()

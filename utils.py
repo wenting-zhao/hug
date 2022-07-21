@@ -43,6 +43,7 @@ def get_args():
     parser.add_argument('--baseline', action='store_true')
     parser.add_argument('--save_model', action='store_true')
     parser.add_argument('--save_results', action='store_true')
+    parser.add_argument('--max_p', action='store_true')
     parser.add_argument("--batch_size", '-b', default=1, type=int,
                         help="batch size per gpu.")
     parser.add_argument("--eval_batch_size", default=32, type=int,
