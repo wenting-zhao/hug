@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch import nn
 import wandb
-from utils import get_args, load_hotpotqa, mean_pooling
+from utils import get_args, load_hotpotqa, mean_pooling, padding
 from utils import prepare_linear, prepare_mlp, prepare_optim_and_scheduler
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -101,20 +101,28 @@ def run_lm(model, batch, bs, num_choices, train):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
     return outputs, attention_mask
 
-def run_para_model(layers, outputs, attention_mask, bs, num_choices):
+def run_para_model(layers, outputs, attention_mask, bs, num_choices, train):
     linear, mlp = layers
     m = nn.Softmax(dim=-1)
     sentence_embeddings = mean_pooling(outputs, attention_mask)
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
     sentence_embeddings = sentence_embeddings.view(bs, num_choices, -1)
-    single_outs = linear(sentence_embeddings).view(bs, -1)
+    if train:
+        single_outs = linear(sentence_embeddings).view(bs, -1)
+    else:
+        with torch.no_grad():
+            single_outs = linear(sentence_embeddings).view(bs, -1)
     single_outs = m(single_outs)
     combs = torch.combinations(torch.arange(num_choices))
     C = len(combs)
     paired = sentence_embeddings[:,combs,:]
     diff = torch.abs(paired[:,:,0] - paired[:,:,1])
     pairs = torch.cat([paired.view(bs,C,-1), diff], dim=-1).view(-1, 3*sentence_embeddings.shape[-1])
-    outs = mlp(pairs).view(bs, -1)
+    if train:
+        outs = mlp(pairs).view(bs, -1)
+    else:
+        with torch.no_grad():
+            outs = mlp(pairs).view(bs, -1)
     outs = m(outs)
     res = []
     st, ed = 0, 9
@@ -141,10 +149,14 @@ def process_para_outs(pouts, lm_outputs, raw_input_ids, bs, num_choices, max_p):
         sent_in = sent_in.view(bs*10, seq_len, -1)
     return input_ids, sent_in, ijs
 
-def run_sent_model(linear, tok, input_ids, embs, labels):
+def run_sent_model(linear, tok, input_ids, embs, train):
     indices = (input_ids == tok.unk_token_id).nonzero(as_tuple=False)
     outs = embs[indices[:, 0], indices[:, 1]]
-    outs = linear(outs)
+    if train:
+        outs = linear(outs)
+    else:
+        with torch.no_grad():
+            outs = linear(outs)
     outs = torch.sigmoid(outs).view(-1)
     x = indices[:, 0]
     L = len(x)
@@ -154,20 +166,23 @@ def run_sent_model(linear, tok, input_ids, embs, labels):
     outs = (outs[:, None, None] *
              cols[:, None, :] *
              rows[:, :, None]).sum(0)
-    #if outs.shape[1] < labels.shape[1]:
-    #    outs = torch.cat([outs, torch.zeros(labels.shape[0], labels.shape[1]-outs.shape[1]).to(device)], dim=1)
     return outs
 
 def process_sent_outs(souts, max_p):
-    out = souts.max(dim=-1)
-    values, sent_preds = out
+    sent_preds = (souts > 0.1).nonzero(as_tuple=True)
+    values = souts[sent_preds[0], sent_preds[1]]
+    values = padding(sent_preds[0], values)
+    values[values==0] = 1
+    values = values.prod(dim=-1)
+    sent_preds = [sent_preds[0].tolist(), sent_preds[1].tolist()]
+    ls = [[] for _ in range(sent_preds[0][-1]+1)]
+    for x, y in zip(sent_preds[0], sent_preds[1]):
+        ls[x].append(y)
     if max_p:
-        sent_preds = sent_preds.view(-1, 2, 1)
-        values = values.view(-1, 2, 1)
+        ls = [ls[i:i+2] for i in range(0, len(ls), 2)]
     else:
-        sent_preds = sent_preds.view(-1, 10, 1)
-        values = values.view(-1, 10, 1)
-    return values, sent_preds
+        ls = [ls[i:i+10] for i in range(0, len(ls), 10)]
+    return values, ls
 
 def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, max_p):
     out = []
@@ -222,30 +237,38 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
     return outputs
 
 def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, train=True):
-    if not train: max_p = True
     for key in batch:
         if key != "contexts" and key != "answers":
             batch[key] = batch[key].to(device)
     bs = len(batch['plabels'])
     num_choices = len(batch['input_ids'][0])
     lm_outputs, attention_mask = run_lm(layers[0], batch, bs, num_choices, train=train)
-    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, num_choices)
+    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, num_choices, train=train)
     input_ids, sent_in, para_ids = process_para_outs(
         pouts, lm_outputs, batch['input_ids'], bs, num_choices, max_p=max_p)
-    sent_out = run_sent_model(layers[-1], tokenizer, input_ids, sent_in, batch['slabels'])
+    sent_out = run_sent_model(layers[-1], tokenizer, input_ids, sent_in, train=train)
     sent_values, sent_idx = process_sent_outs(sent_out, max_p=max_p)
-    combs = torch.combinations(torch.arange(num_choices))
-    C = len(combs)
-    paired = sent_values[:,combs]
-    sent_product = paired[:,:,0] * paired[:,:,1]
-    sent_product = sent_product.view(bs, C)
     answer_in, answer_attn, labels = get_relevant(
             answer_tokenizer, batch["contexts"], batch['answers'],
-            para_ids.tolist(), sent_idx.tolist(), max_p=max_p)
+            para_ids.tolist(), sent_idx, max_p=max_p)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
     if max_p:
-        loss = answ_out.loss.mean()
+        if train:
+            loss = answ_out.loss.view(bs, -1).mean(-1)
+            pout_max = torch.max(pouts, dim=-1)[0]
+            loss -= torch.log(pout_max)
+            sent_max = sent_values.view(bs, -1).mean(-1)
+            loss -= torch.log(sent_max)
+            loss = loss.mean()
+        else:
+            loss = 0.
     else:
+        combs = torch.combinations(torch.arange(num_choices))
+        C = len(combs)
+        sent_values = sent_values.view(bs, -1)
+        paired = sent_values[:,combs]
+        sent_product = paired[:,:,0] * paired[:,:,1]
+        sent_product = sent_product.view(bs, C)
         loss = answ_out.loss.reshape(bs, len(label2ij), -1).mean(dim=-1)
         loss -= torch.log(pouts)
         loss -= torch.log(sent_product)
@@ -261,7 +284,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     for step, eval_batch in enumerate(dataloader):
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
         eval_outs, para_ids, sent_ids, _ = run_model(
-                eval_batch, layers, answ_model, tok, answ_tok, max_p=args.max_p, train=False)
+                eval_batch, layers, answ_model, tok, answ_tok, max_p=True, train=False)
         preds = tok.batch_decode(eval_outs, skip_special_tokens=True)
         exact_match.add_batch(
             predictions=preds,
@@ -291,7 +314,10 @@ def main():
     train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
+    if args.max_p:
+        run_name=f'max_p model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
+    else:
+        run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
