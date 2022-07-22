@@ -169,6 +169,9 @@ def run_sent_model(linear, tok, input_ids, embs, train):
     return outs
 
 def process_sent_outs(souts, max_p, marker=999):
+    if souts.shape[1] < 3:
+        pad = torch.zeros(souts.shape[0], 3-souts.shape[1]).to(device)
+        souts = torch.concat([souts, pad], dim=1)
     values, sent_preds = torch.topk(souts, 3, dim=-1)
     indices = (values[:, 1:] <= 0.8).nonzero().tolist()
     first = values[:, 0].view(-1, 1)
