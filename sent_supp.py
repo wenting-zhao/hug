@@ -164,7 +164,7 @@ def evaluate(steps, args, layers, dataloader, split):
         results = []
     acc = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs = run_model(model, mlp, linear, eval_batch, train=False, baseline=args.baseline, max_n=args.max_matrix)
+        eval_outs = run_model(layers, eval_batch, train=False, baseline=args.baseline, max_n=args.max_matrix)
         predictions = eval_outs.argmax(dim=-1).view(-1, 1)
         labels = eval_batch["labels"].view(-1, 1)
         if args.baseline:

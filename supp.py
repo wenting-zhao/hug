@@ -126,7 +126,7 @@ def evaluate(steps, args, layers, tok, dataloader, split, threshold=THRESHOLDS):
     results = []
     labels = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs = run_model(model, linear, tok, eval_batch, train=False, baseline=args.baseline)
+        eval_outs = run_model(layers, tok, eval_batch, train=False, baseline=args.baseline)
         results.append(eval_outs)
         labels.append(eval_batch["labels"])
     best_acc, best_t, best_preds = 0, 0, 0

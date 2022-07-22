@@ -114,7 +114,7 @@ def evaluate(steps, args, layers, dataloader, split):
     metric = load_metric("accuracy")
     layers[0].eval()
     for step, eval_batch in enumerate(dataloader):
-        eval_outs = run_model(model, linear, eval_batch, train=False)
+        eval_outs = run_model(layers, eval_batch, train=False)
         predictions = eval_outs.argmax(dim=-1)
         metric.add_batch(
             predictions=predictions,
