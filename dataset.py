@@ -30,8 +30,8 @@ def correct_format(ps):
         out = ps[:10]
     return out
 
-def preprocess_paragraph_function(examples, tokenizer):
-    paragraphs = [[s for s in i["sentences"]] for i in examples["context"]]
+def preprocess_paragraph_function(examples, tokenizer, max_sent):
+    paragraphs = [[s[:max_sent] for s in i["sentences"]] for i in examples["context"]]
     paragraphs = [correct_format(ps) if len(ps) != 10 else ps for ps in paragraphs]
     paragraphs = [[' '.join(s) for s in i] for i in paragraphs]
     questions = [[q] * 10 for i, q in enumerate(examples["question"])]
@@ -41,7 +41,7 @@ def preprocess_paragraph_function(examples, tokenizer):
     tokenized_paras = [tokenized_paras[i:i+10] for i in range(0, len(tokenized_paras), 10)]
     return tokenized_paras
 
-def prepare_paragraphs(tokenizer, split, data, baseline=False, no_x=False):
+def prepare_paragraphs(tokenizer, split, data, max_sent, baseline=False, no_x=False):
     print("preparing paragraphs")
     data = data[split]
 
@@ -51,11 +51,11 @@ def prepare_paragraphs(tokenizer, split, data, baseline=False, no_x=False):
                 with open(f"cache/hotpotqa_encodings.pkl", 'rb') as f:
                     paras = pickle.load(f)
             else:
-                paras = preprocess_paragraph_function(data, tokenizer)
+                paras = preprocess_paragraph_function(data, tokenizer, max_sent)
                 with open(f"cache/hotpotqa_encodings.pkl", 'wb') as f:
                     pickle.dump(paras, f)
         else:
-            paras = preprocess_paragraph_function(data, tokenizer)
+            paras = preprocess_paragraph_function(data, tokenizer, max_sent)
     else:
         paras = None
 
@@ -86,7 +86,7 @@ def prepare_paragraphs(tokenizer, split, data, baseline=False, no_x=False):
         paras, labels = split_data(paras, labels)
     return paras, labels
 
-def preprocess_sentence_function(examples, tokenizer, baseline, unsup):
+def preprocess_sentence_function(examples, tokenizer, baseline, unsup, max_sent):
     assert len(examples["context"]) == len(examples["labels"])
     paragraphs = []
     if unsup:
@@ -99,7 +99,7 @@ def preprocess_sentence_function(examples, tokenizer, baseline, unsup):
             ps = []
             for i in range(len(sents)):
                 t = ts[i]
-                p = f' {tokenizer.unk_token}'.join(sents[i])
+                p = f' {tokenizer.unk_token}'.join(sents[i][:max_sent])
                 p = f'{q} {tokenizer.sep_token} {t}: {tokenizer.unk_token} {p} {tokenizer.sep_token}'
                 ps.append(p)
             paragraphs += ps
@@ -142,7 +142,7 @@ def sentence_level_preprocess_function(examples, tokenizer, threshold):
     tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
     return tokenized_paras
 
-def prepare_sentences(tokenizer, split, data, baseline=False, unsup=False):
+def prepare_sentences(tokenizer, split, data, max_sent, baseline=False, unsup=False):
     assert (baseline is False) or (unsup is False)
     print("preparing sentences")
     data = data[split][:]
@@ -208,11 +208,11 @@ def prepare_sentences(tokenizer, split, data, baseline=False, unsup=False):
             with open(name, 'rb') as f:
                 paras = pickle.load(f)
         else:
-            paras = preprocess_sentence_function(data, tokenizer, baseline, unsup)
+            paras = preprocess_sentence_function(data, tokenizer, baseline, unsup, max_sent)
             with open(name, 'wb') as f:
                 pickle.dump(paras, f)
     else:
-         paras = preprocess_sentence_function(data, tokenizer, baseline, unsup)
+         paras = preprocess_sentence_function(data, tokenizer, baseline, unsup, max_sent)
     if split == "train": 
         paras, sent_labels = split_data(paras, sent_labels)
     return paras, sent_labels
@@ -285,7 +285,7 @@ def prepare_individual_sentences(tokenizer, split, data, baseline=False, thresho
         paras, sent_labels = split_data(paras, sent_labels)
     return paras, sent_labels
 
-def preprocess_answer_function(examples, tokenizer):
+def preprocess_answer_function(examples, tokenizer, max_sent):
     lengths = []
     sents = []
     contexts = [c for c in examples['context']]
@@ -293,7 +293,7 @@ def preprocess_answer_function(examples, tokenizer):
         if len(contexts[i]['sentences']) != 10:
             contexts[i]['sentences'] = correct_format(contexts[i]['sentences'])
         for j in range(len(contexts[i]['sentences'])):
-            curr = contexts[i]['sentences'][j]
+            curr = contexts[i]['sentences'][j][:max_sent]
             sents += curr
             lengths.append(len(curr))
     answers = [a for a in examples['answer']]
@@ -310,7 +310,7 @@ def preprocess_answer_function(examples, tokenizer):
     final = [(x, y) for x, y in zip(tokenized_questions, tokenized_sents)]
     return final, tokenized_answers
 
-def prepare_answers(tokenizer, split, data, baseline=False):
+def prepare_answers(tokenizer, split, data, max_sent, baseline=False):
     print("preparing answers")
     data = data[split]
 
@@ -319,24 +319,24 @@ def prepare_answers(tokenizer, split, data, baseline=False):
             with open(f"cache/hotpotqa_answer_encodings.pkl", 'rb') as f:
                 sents, answers = pickle.load(f)
         else:
-            sents, answers = preprocess_answer_function(data, tokenizer)
+            sents, answers = preprocess_answer_function(data, tokenizer, max_sent)
             with open(f"cache/hotpotqa_answer_encodings.pkl", 'wb') as f:
                 pickle.dump((sents, answers), f)
     else:
-        sents, answers = preprocess_answer_function(data, tokenizer)
+        sents, answers = preprocess_answer_function(data, tokenizer, max_sent)
     if split == "train": 
         sents, answers = split_data(sents, answers)
     return sents, answers
 
-def prepare_pipeline(tokenizer, answer_tokenizer, data, para_ind=False, sent_ind=True):
+def prepare_pipeline(tokenizer, answer_tokenizer, data, max_sent, para_ind=False, sent_ind=True):
     print("preparing HotpotQA")
     out = dict()
     out["train"] = dict()
     out["valid"] = dict()
     out["test"] = dict()
-    _, para_labels = prepare_paragraphs(tokenizer, "train", data, no_x=True)
-    paras, sent_labels = prepare_sentences(tokenizer, "train", data, unsup=True)
-    supps, answ_labels = prepare_answers(answer_tokenizer, "train", data)
+    _, para_labels = prepare_paragraphs(tokenizer, "train", data, max_sent=max_sent, no_x=True)
+    paras, sent_labels = prepare_sentences(tokenizer, "train", data, max_sent=max_sent, unsup=True)
+    supps, answ_labels = prepare_answers(answer_tokenizer, "train", data, max_sent=max_sent)
     assert len(paras) == len(para_labels) == len(answ_labels)
     out["train"]["paras"] = paras[0]
     out["valid"]["paras"] = paras[1]
@@ -348,9 +348,9 @@ def prepare_pipeline(tokenizer, answer_tokenizer, data, para_ind=False, sent_ind
     out["valid"]["supps"] = supps[1]
     out["train"]["answ_labels"] = answ_labels[0]
     out["valid"]["answ_labels"] = answ_labels[1]
-    _, out["test"]["para_labels"] = prepare_paragraphs(tokenizer, "validation", data, no_x=True)
-    out["test"]["paras"], out["test"]["sent_labels"] = prepare_sentences(tokenizer, "validation", data, unsup=True)
-    out["test"]["supps"], out["test"]["answ_labels"] = prepare_answers(answer_tokenizer, "validation", data)
+    _, out["test"]["para_labels"] = prepare_paragraphs(tokenizer, "validation", data, max_sent=max_sent, no_x=True)
+    out["test"]["paras"], out["test"]["sent_labels"] = prepare_sentences(tokenizer, "validation", data, max_sent=max_sent, unsup=True)
+    out["test"]["supps"], out["test"]["answ_labels"] = prepare_answers(answer_tokenizer, "validation", data, max_sent=max_sent)
     return out
 
 class HotpotQADataset(torch.utils.data.Dataset):

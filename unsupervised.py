@@ -81,7 +81,7 @@ def prepare_model(args):
     return [model, linear, mlp, sent_linear]
 
 def prepare_dataloader(data, tok, answer_tok, args):
-    data = prepare_pipeline(tok, answer_tok, data)
+    data = prepare_pipeline(tok, answer_tok, data, max_sent=args.max_paragraph_length)
     train_dataset = UnsupHotpotQADataset(data["train"])
     eval_dataset = UnsupHotpotQADataset(data["valid"])
     test_dataset = UnsupHotpotQADataset(data["test"])
@@ -322,9 +322,9 @@ def main():
 
     model_name = args.model_dir.split('/')[-1]
     if args.max_p:
-        run_name=f'max_p model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff}'
+        run_name=f'max_p model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length}'
     else:
-        run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff}'
+        run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)

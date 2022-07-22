@@ -53,7 +53,7 @@ def get_args():
                         help="number of steps between each evaluation.")
     parser.add_argument("--epoch", '-epoch', default=10, type=int,
                         help="The number of epochs for fine-tuning.")
-    parser.add_argument("--max_paragraph_length", default=10, type=int,
+    parser.add_argument("--max_paragraph_length", default=1000, type=int,
                         help="The maximum number of sentences allowed in a paragraph.")
     parser.add_argument("--max_matrix", default=5000, type=int,
                         help="The largest n when doing matrix operation.")
