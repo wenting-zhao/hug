@@ -55,6 +55,8 @@ def get_args():
                         help="The number of epochs for fine-tuning.")
     parser.add_argument("--max_paragraph_length", default=1000, type=int,
                         help="The maximum number of sentences allowed in a paragraph.")
+    parser.add_argument("--sentence_thrshold", default=0.5, type=float,
+                        help="The maximum number of sentences allowed in a paragraph.")
     parser.add_argument("--max_matrix", default=5000, type=int,
                         help="The largest n when doing matrix operation.")
     parser.add_argument("--model_dir", default="roberta-large", type=str,

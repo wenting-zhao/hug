@@ -168,14 +168,14 @@ def run_sent_model(linear, tok, input_ids, embs, train):
              rows[:, :, None]).sum(0)
     return outs
 
-def process_sent_outs(souts, max_p, marker=999):
+def process_sent_outs(souts, max_p, marker=999, threshold=0.5):
     if souts.shape[1] < 3:
         pad = torch.zeros(souts.shape[0], 3-souts.shape[1]).to(device)
         souts = torch.concat([souts, pad], dim=1)
     values, sent_preds = torch.topk(souts, 3, dim=-1)
-    indices = (values[:, 1:] <= 0.8).nonzero().tolist()
+    indices = (values[:, 1:] <= threshold).nonzero().tolist()
     first = values[:, 0].view(-1, 1)
-    second = torch.where(values[:, 1:] <= 0.5, torch.tensor(1.).to(device), values[:, 1:])
+    second = torch.where(values[:, 1:] <= threshold, torch.tensor(1.).to(device), values[:, 1:])
     values = torch.cat([first, second], dim=1)
     values = values.prod(dim=-1)
     sent_preds = sent_preds.tolist()
@@ -241,7 +241,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
             outputs = model.generate(input_ids, num_beams=2, min_length=1, max_length=20)
     return outputs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, train=True):
     for key in batch:
         if key != "contexts" and key != "answers":
             batch[key] = batch[key].to(device)
@@ -253,7 +253,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     input_ids, sent_in, para_ids = process_para_outs(
         pouts, lm_outputs, batch['input_ids'], bs, num_choices, max_p=max_p)
     sent_out = run_sent_model(layers[-1], tokenizer, input_ids, sent_in, train=train)
-    sent_values, sent_idx = process_sent_outs(sent_out, max_p=max_p)
+    sent_values, sent_idx = process_sent_outs(sent_out, max_p=max_p, threshold=t)
     answer_in, answer_attn, labels = get_relevant(
             answer_tokenizer, batch["contexts"], batch['answers'],
             para_ids.tolist(), sent_idx, max_p=max_p)
@@ -291,7 +291,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     for step, eval_batch in enumerate(dataloader):
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
         eval_outs, para_ids, sent_ids, _ = run_model(
-                eval_batch, layers, answ_model, tok, answ_tok, max_p=True, reg_coeff=args.reg_coeff, train=False)
+                eval_batch, layers, answ_model, tok, answ_tok, max_p=True, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False)
         preds = tok.batch_decode(eval_outs, skip_special_tokens=True)
         exact_match.add_batch(
             predictions=preds,
@@ -322,9 +322,9 @@ def main():
 
     model_name = args.model_dir.split('/')[-1]
     if args.max_p:
-        run_name=f'max_p model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length}'
+        run_name=f'max_p model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length} t-{args.sentence_thrshold}'
     else:
-        run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length}'
+        run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length} t-{args.sentence_thrshold}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
@@ -361,7 +361,7 @@ def main():
                 all_layers[0].train()
                 answer_model.train()
             answ, _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
-                    answer_tokenizer, reg_coeff=args.reg_coeff, max_p=args.max_p)
+                    answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
