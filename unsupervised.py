@@ -168,16 +168,18 @@ def run_sent_model(linear, tok, input_ids, embs, train):
              rows[:, :, None]).sum(0)
     return outs
 
-def process_sent_outs(souts, max_p):
-    sent_preds = (souts > 0.1).nonzero(as_tuple=True)
-    values = souts[sent_preds[0], sent_preds[1]]
-    values = padding(sent_preds[0], values)
-    values[values==0] = 1
+def process_sent_outs(souts, max_p, marker=999):
+    values, sent_preds = torch.topk(souts, 3, dim=-1)
+    indices = (values[:, 1:] <= 0.8).nonzero().tolist()
+    first = values[:, 0].view(-1, 1)
+    second = torch.where(values[:, 1:] <= 0.5, torch.tensor(1.).to(device), values[:, 1:])
+    values = torch.cat([first, second], dim=1)
     values = values.prod(dim=-1)
-    sent_preds = [sent_preds[0].tolist(), sent_preds[1].tolist()]
-    ls = [[] for _ in range(sent_preds[0][-1]+1)]
-    for x, y in zip(sent_preds[0], sent_preds[1]):
-        ls[x].append(y)
+    sent_preds = sent_preds.tolist()
+    ls = []
+    for i in range(len(sent_preds)):
+        curr = [j for ii, j in enumerate(sent_preds[i]) if [i, ii-1] not in indices]
+        ls.append(curr)
     if max_p:
         ls = [ls[i:i+2] for i in range(0, len(ls), 2)]
     else:
@@ -204,7 +206,7 @@ def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, m
                 for j in sent_indices[i][p1]:
                     c1 += supp[p1][j]
                 for j in sent_indices[i][p2]:
-                    c1 += supp[p2][j]
+                    c2 += supp[p2][j]
                 out.append(q+c1+c2)
     out = [{"input_ids": x} for x in out]
     out = tokenizer.pad(
@@ -236,7 +238,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
             outputs = model.generate(input_ids, num_beams=2, min_length=1, max_length=20)
     return outputs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, train=True):
     for key in batch:
         if key != "contexts" and key != "answers":
             batch[key] = batch[key].to(device)
@@ -244,6 +246,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, t
     num_choices = len(batch['input_ids'][0])
     lm_outputs, attention_mask = run_lm(layers[0], batch, bs, num_choices, train=train)
     pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, num_choices, train=train)
+    entropy = torch.mean(-torch.sum(pouts * torch.log(pouts + 1e-9), dim = 1), dim = 0)
     input_ids, sent_in, para_ids = process_para_outs(
         pouts, lm_outputs, batch['input_ids'], bs, num_choices, max_p=max_p)
     sent_out = run_sent_model(layers[-1], tokenizer, input_ids, sent_in, train=train)
@@ -256,9 +259,9 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, t
         if train:
             loss = answ_out.loss.view(bs, -1).mean(-1)
             pout_max = torch.max(pouts, dim=-1)[0]
-            loss -= torch.log(pout_max)
+            loss *= pout_max
             sent_max = sent_values.view(bs, -1).mean(-1)
-            loss -= torch.log(sent_max)
+            loss *= sent_max
             loss = loss.mean()
         else:
             loss = 0.
@@ -270,9 +273,10 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, t
         sent_product = paired[:,:,0] * paired[:,:,1]
         sent_product = sent_product.view(bs, C)
         loss = answ_out.loss.reshape(bs, len(label2ij), -1).mean(dim=-1)
-        loss -= torch.log(pouts)
-        loss -= torch.log(sent_product)
+        loss *= pouts
+        loss *= sent_product
         loss = loss.mean()
+    loss += reg_coeff * entropy
     return answ_out, para_ids, sent_idx, loss
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
@@ -284,7 +288,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     for step, eval_batch in enumerate(dataloader):
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
         eval_outs, para_ids, sent_ids, _ = run_model(
-                eval_batch, layers, answ_model, tok, answ_tok, max_p=True, train=False)
+                eval_batch, layers, answ_model, tok, answ_tok, max_p=True, reg_coeff=args.reg_coeff, train=False)
         preds = tok.batch_decode(eval_outs, skip_special_tokens=True)
         exact_match.add_batch(
             predictions=preds,
@@ -315,9 +319,9 @@ def main():
 
     model_name = args.model_dir.split('/')[-1]
     if args.max_p:
-        run_name=f'max_p model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
+        run_name=f'max_p model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff}'
     else:
-        run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} warmup-{args.warmup_ratio}'
+        run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
@@ -353,7 +357,8 @@ def main():
                         all_layers[0].save_pretrained(f"{args.output_model_dir}/{run_name}")
                 all_layers[0].train()
                 answer_model.train()
-            answ, _, _, loss = run_model(batch, all_layers, answer_model, tokenizer, answer_tokenizer, max_p=args.max_p)
+            answ, _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
+                    answer_tokenizer, reg_coeff=args.reg_coeff, max_p=args.max_p)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
