@@ -189,7 +189,7 @@ def process_sent_outs(souts, max_p, marker=999, threshold=0.5):
         ls = [ls[i:i+10] for i in range(0, len(ls), 10)]
     return values, ls
 
-def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, max_p):
+def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, max_p, max_len):
     out = []
     if max_p:
         for c, pidx, sidx in zip(contexts, para_indices, sent_indices):
@@ -215,9 +215,13 @@ def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, m
     out = tokenizer.pad(
         out,
         padding='longest',
-        max_length=512,
         return_tensors="pt",
     )
+    # to avoid oom on a6000
+    if max_len > 512 and len(out["input_ids"]) > 10:
+        max_len = 512
+    out["input_ids"] = out["input_ids"][:, :max_len]
+    out["attention_mask"] = out["attention_mask"][:, :max_len]
 
     if not max_p:
         raw_answers = [[x] * len(label2ij) for x in raw_answers]
@@ -226,9 +230,9 @@ def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, m
     answers = tokenizer.pad(
         raw_answers,
         padding='longest',
-        max_length=512,
         return_tensors="pt",
-    )["input_ids"]
+        return_attention_mask=False,
+    )['input_ids']
 
     return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
 
@@ -256,7 +260,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     sent_values, sent_idx = process_sent_outs(sent_out, max_p=max_p, threshold=t)
     answer_in, answer_attn, labels = get_relevant(
             answer_tokenizer, batch["contexts"], batch['answers'],
-            para_ids.tolist(), sent_idx, max_p=max_p)
+            para_ids.tolist(), sent_idx, max_p=max_p, max_len=answer_model.config.max_position_embeddings)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
     if max_p:
         if train:

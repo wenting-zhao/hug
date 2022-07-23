@@ -37,7 +37,7 @@ def preprocess_paragraph_function(examples, tokenizer, max_sent):
     questions = [[q] * 10 for i, q in enumerate(examples["question"])]
     paragraphs = [p for ps in paragraphs for p in ps]
     questions = [q for qs in questions for q in qs]
-    tokenized_paras = tokenizer(questions, paragraphs, truncation=True)['input_ids']
+    tokenized_paras = tokenizer(questions, paragraphs, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_paras = [tokenized_paras[i:i+10] for i in range(0, len(tokenized_paras), 10)]
     return tokenized_paras
 
@@ -103,7 +103,7 @@ def preprocess_sentence_function(examples, tokenizer, baseline, unsup, max_sent)
                 p = f'{q} {tokenizer.sep_token} {t}: {tokenizer.unk_token} {p} {tokenizer.sep_token}'
                 ps.append(p)
             paragraphs += ps
-        tokenized_paras = tokenizer(paragraphs, truncation=True)['input_ids']
+        tokenized_paras = tokenizer(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
         tokenized_paras = [tokenized_paras[i:i+10] for i in range(0, len(tokenized_paras), 10)]
     else:
         for context, labels, q in zip(examples["context"], examples["labels"], examples["question"]):
@@ -120,10 +120,10 @@ def preprocess_sentence_function(examples, tokenizer, baseline, unsup, max_sent)
                 p2 = f'{t2}: {tokenizer.unk_token} {p2}'
                 p = f"{p1} {p2}"
                 paragraphs.append(p)
-        tokenized_paras = tokenizer(paragraphs, truncation=True)['input_ids']
+        tokenized_paras = tokenizer(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
         if baseline:
             tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
-        #tokenized_paras = tokenizer(paragraphs)
+        #tokenized_paras = tokenizer(paragraphs, return_attention_mask=False)
         #lengths = [len(para) for para in tokenized_paras['input_ids'] if len(para) > 512]
     return tokenized_paras
 
@@ -137,7 +137,7 @@ def sentence_level_preprocess_function(examples, tokenizer, threshold):
         lengths[i] += lengths[i-1]
     paragraphs = [p for ps in paragraphs for p in ps]
     questions = [q for qs in questions for q in qs]
-    tokenized_paras = tokenizer(questions, paragraphs, truncation=True)['input_ids']
+    tokenized_paras = tokenizer(questions, paragraphs, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_paras = [tokenized_paras[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
     tokenized_paras = [tokenized_paras[i:i+2] for i in range(0, len(tokenized_paras), 2)]
     return tokenized_paras
@@ -301,9 +301,9 @@ def preprocess_answer_function(examples, tokenizer, max_sent):
     lengths.insert(0, 0)
     for i in range(1, len(lengths)):
         lengths[i] += lengths[i-1]
-    tokenized_sents = tokenizer(sents, truncation=True)['input_ids']
-    tokenized_answers = tokenizer(answers, truncation=True)['input_ids']
-    tokenized_questions = tokenizer(questions, truncation=True)['input_ids']
+    tokenized_sents = tokenizer(sents, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_answers = tokenizer(answers, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_questions = tokenizer(questions, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
     tokenized_sents = [tokenized_sents[i:i+10] for i in range(0, len(tokenized_sents), 10)]
     assert len(tokenized_sents) == len(tokenized_answers) == len(tokenized_questions)
