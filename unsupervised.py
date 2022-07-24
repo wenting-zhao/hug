@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch import nn
 import wandb
-from utils import get_args, load_hotpotqa, mean_pooling, padding
+from utils import get_args, load_hotpotqa, mean_pooling, padding, normalize_answer
 from utils import prepare_linear, prepare_mlp, prepare_optim_and_scheduler
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -297,6 +297,8 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         eval_outs, para_ids, sent_ids, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False)
         preds = tok.batch_decode(eval_outs, skip_special_tokens=True)
+        gold = [normalize_answer(s) for s in gold]
+        preds = [normalize_answer(s) for s in preds]
         exact_match.add_batch(
             predictions=preds,
             references=gold,
