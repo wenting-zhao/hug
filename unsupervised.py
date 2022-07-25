@@ -169,20 +169,16 @@ def run_sent_model(linear, tok, input_ids, embs, train):
     return outs
 
 def process_sent_outs(souts, max_p, marker=999, threshold=0.5):
-    if souts.shape[1] < 3:
-        pad = torch.zeros(souts.shape[0], 3-souts.shape[1]).to(device)
+    if souts.shape[1] == 1:
+        pad = torch.zeros(souts.shape[0], 1).to(device)
         souts = torch.concat([souts, pad], dim=1)
-    values, sent_preds = torch.topk(souts, 3, dim=-1)
-    indices = (values[:, 1:] <= threshold).nonzero().tolist()
-    first = values[:, 0].view(-1, 1)
-    second = torch.where(values[:, 1:] <= threshold, torch.tensor(1.).to(device), values[:, 1:])
-    values = torch.cat([first, second], dim=1)
+    values = souts[:, :2]
+    sent_preds = (values > 0).nonzero().tolist()
     values = values.prod(dim=-1)
-    sent_preds = sent_preds.tolist()
-    ls = []
+    ls = [[] for _ in range(len(souts))]
     for i in range(len(sent_preds)):
-        curr = [j for ii, j in enumerate(sent_preds[i]) if [i, ii-1] not in indices]
-        ls.append(curr)
+        x, y = sent_preds[i]
+        ls[x].append(y)
     if max_p:
         ls = [ls[i:i+2] for i in range(0, len(ls), 2)]
     else:
