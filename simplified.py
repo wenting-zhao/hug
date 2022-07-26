@@ -177,13 +177,12 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
             answer_tokenizer, batch["contexts"], batch['answers'])
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
     if train:
+        print("="*100)
         loss = answ_out.loss.view(bs, num_choices, -1)
         pouts = torch.log(pouts)
         loss = (-loss).sum(dim=-1)
         loss += pouts
-        loss = torch.exp(loss)
-        loss = loss.sum(dim=-1)
-        loss = torch.log(loss)
+        loss = torch.logsumexp(loss, dim=-1)
         loss = -loss.mean()
     else:
         loss = 0.
