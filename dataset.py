@@ -69,13 +69,14 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent):
         for (m, n) in combinations(ps, 2):
             p = f"{q} {answ_tok.sep_token} {m} {answ_tok.sep_token} {n}"
             supps.append(p)
-    length = len(list(combinations(labels, 2)))
+    para_length = len(labels)
+    supp_length = len(list(combinations(labels, 2)))
     tokenized_paras = tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
-    tokenized_paras = [tokenized_paras[i:i+length] for i in range(0, len(tokenized_paras), length)]
+    tokenized_paras = [tokenized_paras[i:i+para_length] for i in range(0, len(tokenized_paras), para_length)]
     answers = [a for a in examples['answer']]
     tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
-    tokenized_supps = answ_tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
-    tokenized_supps = [tokenized_supps[i:i+length] for i in range(0, len(tokenized_supps), length)]
+    tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = [tokenized_supps[i:i+supp_length] for i in range(0, len(tokenized_supps), supp_length)]
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
     return tokenized_paras, tokenized_supps, tokenized_answers
 
