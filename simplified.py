@@ -178,13 +178,13 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
     if train:
         loss = answ_out.loss.view(bs, num_choices, -1)
-        loss = torch.exp(-loss)
-        mask = loss!=1
-        loss = (loss*mask).sum(dim=-1)/mask.sum(dim=-1)
-        loss *= pouts
+        pouts = torch.log(pouts)
+        loss = (-loss).sum(dim=-1)
+        loss += pouts
+        loss = torch.exp(loss)
         loss = loss.sum(dim=-1)
-        loss = -torch.log(loss)
-        loss = loss.mean()
+        loss = torch.log(loss)
+        loss = -loss.mean()
     else:
         loss = 0.
     return answ_out, pouts, loss
