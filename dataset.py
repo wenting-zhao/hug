@@ -30,6 +30,87 @@ def correct_format(ps):
         out = ps[:10]
     return out
 
+def preprocess_simplified_function(examples, tok, answ_tok, max_sent):
+    paragraphs = []
+    supps = []
+    for context, labels, q, supp in zip(examples["context"], examples["labels"], examples["question"], examples['supporting_facts']):
+        ts = context["title"]
+        sents = context["sentences"]
+        x, y, z = labels
+        if len(ts) != 10:
+            ts = correct_format(ts)
+            sents = correct_format(sents)
+        tmp = defaultdict(list)
+        for t, sid in zip(supp["title"], supp["sent_id"]):
+            if t == ts[x]:
+                if sid >= len(sents[x]):
+                    print("INDEX OUT OF RANGE", sid, len(sents[x]))
+                    continue
+                tmp[x].append(sid)
+            else:
+                if sid >= len(sents[y]):
+                    print("INDEX OUT OF RANGE", sid, len(sents[y]))
+                    continue
+                tmp[y].append(sid)
+        p1 = [sents[x][i] for i in tmp[x]]
+        p2 = [sents[y][i] for i in tmp[y]]
+        p3 = [sents[z][0]]
+        ps = [p1, p2, p3]
+        ps = [' '.join(p) for p in ps]
+        paragraphs += [f"{q} {tok.sep_token} {p}" for p in ps]
+        for i in range(len(labels)):
+            ps[i] = f'{ts[labels[i]]}: {ps[i]}'
+        for (m, n) in combinations(ps, 2):
+            p = f"{q} {answ_tok.sep_token} {m} {answ_tok.sep_token} {n}"
+            supps.append(p)
+    length = len(list(combinations(labels, 2)))
+    tokenized_paras = tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_paras = [tokenized_paras[i:i+length] for i in range(0, len(tokenized_paras), length)]
+    answers = [a for a in examples['answer']]
+    tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = answ_tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = [tokenized_supps[i:i+length] for i in range(0, len(tokenized_supps), length)]
+    assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
+    return tokenized_paras, tokenized_supps, tokenized_answers
+
+def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, baseline=False):
+    print("preparing simplified")
+    data = data[split][:]
+
+    remained = []
+    for title_label, titles in zip(data['supporting_facts'], data['context']):
+        title_label = title_label["title"]
+        titles = titles["title"]
+        l = []
+        for i in range(len(titles)):
+            if titles[i] in title_label:
+                l.append(i)
+        assert len(l) == 2
+        assert l[0] < l[1]
+        total = list(range(10))
+        total.remove(l[0])
+        total.remove(l[1])
+        distractor = random.choice(total)
+        l.append(distractor)
+        remained.append(l)
+    data["labels"] = remained
+
+    if split == "train":
+        if os.path.isfile(f"cache/hotpotqa_simplified_encodings.pkl"):
+            with open(f"cache/hotpotqa_simplified_encodings.pkl", 'rb') as f:
+                paras, supps, answers = pickle.load(f)
+        else:
+            paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent)
+            with open(f"cache/hotpotqa_simplified_encodings.pkl", 'wb') as f:
+                pickle.dump((paras, supps, answers), f)
+    else:
+        paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent)
+
+    if split == "train":
+        paras, _ = split_data(paras, answers)
+        supps, answers = split_data(supps, answers)
+    return paras, supps, answers
+
 def preprocess_paragraph_function(examples, tokenizer, max_sent):
     paragraphs = [[s[:max_sent] for s in i["sentences"]] for i in examples["context"]]
     paragraphs = [correct_format(ps) if len(ps) != 10 else ps for ps in paragraphs]
@@ -82,7 +163,7 @@ def prepare_paragraphs(tokenizer, split, data, max_sent, baseline=False, no_x=Fa
             labels.append(label)
         else:
             labels.append(ij2label[(l[0], l[1])])
-    if split == "train": 
+    if split == "train":
         paras, labels = split_data(paras, labels)
     return paras, labels
 
@@ -365,6 +446,22 @@ class HotpotQADataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.labels)
+
+class SimplifiedHotpotQADataset(torch.utils.data.Dataset):
+    def __init__(self, paras, supps, answs):
+        self.paras = paras
+        self.supps = supps
+        self.answs = answs
+
+    def __getitem__(self, idx):
+        item = dict()
+        item["paras"] = self.paras[idx]
+        item["supps"] = self.supps[idx]
+        item["answs"] = self.answs[idx]
+        return item
+
+    def __len__(self):
+        return len(self.answs)
 
 class UnsupHotpotQADataset(torch.utils.data.Dataset):
     def __init__(self, data):
