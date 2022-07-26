@@ -64,8 +64,8 @@ def prepare_model(args):
     return [model, linear, mlp]
 
 def prepare_dataloader(data, tok, answer_tok, args):
-    paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length)
-    tparas, tsupps, tansws = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length)
+    paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor)
+    tparas, tsupps, tansws = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor)
     train_dataset = SimplifiedHotpotQADataset(paras[0], supps[0], answs[0])
     eval_dataset = SimplifiedHotpotQADataset(paras[1], supps[1], answs[1])
     test_dataset = SimplifiedHotpotQADataset(tparas, tsupps, tansws)
@@ -154,18 +154,18 @@ def pad_answers(tokenizer, contexts, raw_answers):
 
     return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
 
-def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
+def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train):
     answs[answs==model.config.pad_token_id] = -100
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
         with torch.no_grad():
-            outputs = model.generate(input_ids, num_beams=2, min_length=1, max_length=20)
+            outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
             scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
             outputs = (outputs, scores)
     return outputs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, train=True):
     for key in batch:
         if key != "contexts" and key != "answers":
             batch[key] = batch[key].to(device)
@@ -175,9 +175,8 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, num_choices, train=train)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'])
-    answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
+    answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
     if train:
-        print("="*100)
         loss = answ_out.loss.view(bs, num_choices, -1)
         pouts = torch.log(pouts)
         loss = (-loss).sum(dim=-1)
@@ -200,7 +199,8 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         num_choices = len(eval_batch['input_ids'][0])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
         eval_outs, para_preds, _ = run_model(
-                eval_batch, layers, answ_model, tok, answ_tok, max_p=True, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False)
+                eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
+                reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False, beam=args.beam)
         eval_outs, scores = eval_outs
         eval_outs = eval_outs.view(bs, num_choices, -1)
         scores = scores.view(bs, num_choices, -1)
@@ -245,7 +245,7 @@ def main():
     train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length} t-{args.sentence_thrshold}'
+    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} beam-{args.beam}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)

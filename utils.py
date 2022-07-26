@@ -47,6 +47,8 @@ def get_args():
     parser.add_argument('--save_results', action='store_true')
     parser.add_argument('--max_p', action='store_true')
     parser.add_argument('--reg_coeff', default=0.1, type=float)
+    parser.add_argument('--k_distractor', default=1, type=int)
+    parser.add_argument('--beam', default=2, type=int)
     parser.add_argument("--batch_size", '-b', default=1, type=int,
                         help="batch size per gpu.")
     parser.add_argument("--eval_batch_size", default=32, type=int,
@@ -92,6 +94,7 @@ def get_args():
     args = parser.parse_args()
     if args.baseline:
         args.max_paragraph_length = 1000
+    assert args.k_distractor <= 8
     return args
 
 def prepare_optim_and_scheduler(all_layers, args):

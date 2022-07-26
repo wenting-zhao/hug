@@ -36,7 +36,8 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent):
     for context, labels, q, supp in zip(examples["context"], examples["labels"], examples["question"], examples['supporting_facts']):
         ts = context["title"]
         sents = context["sentences"]
-        x, y, z = labels
+        # correct paragrpah indices
+        x, y = labels[:2]
         if len(ts) != 10:
             ts = correct_format(ts)
             sents = correct_format(sents)
@@ -52,10 +53,15 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent):
                     print("INDEX OUT OF RANGE", sid, len(sents[y]))
                     continue
                 tmp[y].append(sid)
-        p1 = [sents[x][i] for i in tmp[x]]
-        p2 = [sents[y][i] for i in tmp[y]]
-        p3 = [sents[z][0]]
-        ps = [p1, p2, p3]
+        ps = [[sents[x][i] for i in tmp[x]], [sents[y][i] for i in tmp[y]]]
+        len0 = len(ps[0])
+        len1 = len(ps[1])
+        for i in labels[2:]:
+            rand = random.random()
+            if rand >= 0.5:
+                ps.append(sents[i][:len0])
+            else:
+                ps.append(sents[i][:len1])
         ps = [' '.join(p) for p in ps]
         paragraphs += [f"{q} {tok.sep_token} {p}" for p in ps]
         for i in range(len(labels)):
@@ -73,7 +79,7 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent):
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
     return tokenized_paras, tokenized_supps, tokenized_answers
 
-def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, baseline=False):
+def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, baseline=False):
     print("preparing simplified")
     data = data[split][:]
 
@@ -90,18 +96,18 @@ def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, baselin
         total = list(range(10))
         total.remove(l[0])
         total.remove(l[1])
-        distractor = random.choice(total)
-        l.append(distractor)
+        distractor = random.sample(total, k=k)
+        l += distractor
         remained.append(l)
     data["labels"] = remained
 
     if split == "train":
-        if os.path.isfile(f"cache/hotpotqa_simplified_encodings.pkl"):
-            with open(f"cache/hotpotqa_simplified_encodings.pkl", 'rb') as f:
+        if os.path.isfile(f"cache/hotpotqa_simplified_encodings_{k}.pkl"):
+            with open(f"cache/hotpotqa_simplified_encodings_{k}.pkl", 'rb') as f:
                 paras, supps, answers = pickle.load(f)
         else:
             paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent)
-            with open(f"cache/hotpotqa_simplified_encodings.pkl", 'wb') as f:
+            with open(f"cache/hotpotqa_simplified_encodings_{k}.pkl", 'wb') as f:
                 pickle.dump((paras, supps, answers), f)
     else:
         paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent)
