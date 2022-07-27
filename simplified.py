@@ -75,9 +75,9 @@ def prepare_dataloader(data, tok, answer_tok, args):
     test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
     return train_dataloader, eval_dataloader, test_dataloader
 
-def run_lm(model, batch, bs, num_choices, train):
-    input_ids = batch["input_ids"].view(bs*num_choices, -1)
-    attention_mask = batch["attention_mask"].view(bs*num_choices, -1)
+def run_lm(model, batch, bs, tot, train):
+    input_ids = batch["input_ids"].view(bs*tot, -1)
+    attention_mask = batch["attention_mask"].view(bs*tot, -1)
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
     else:
@@ -85,19 +85,19 @@ def run_lm(model, batch, bs, num_choices, train):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
     return outputs, attention_mask
 
-def run_para_model(layers, outputs, attention_mask, bs, num_choices, train):
+def run_para_model(layers, outputs, attention_mask, bs, tot, train):
     linear, mlp = layers
     m = nn.Softmax(dim=-1)
     sentence_embeddings = mean_pooling(outputs, attention_mask)
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
-    sentence_embeddings = sentence_embeddings.view(bs, num_choices, -1)
+    sentence_embeddings = sentence_embeddings.view(bs, tot, -1)
     if train:
         single_outs = linear(sentence_embeddings).view(bs, -1)
     else:
         with torch.no_grad():
             single_outs = linear(sentence_embeddings).view(bs, -1)
     single_outs = m(single_outs)
-    combs = torch.combinations(torch.arange(num_choices))
+    combs = torch.combinations(torch.arange(tot))
     C = len(combs)
     paired = sentence_embeddings[:,combs,:]
     diff = torch.abs(paired[:,:,0] - paired[:,:,1])
@@ -109,11 +109,11 @@ def run_para_model(layers, outputs, attention_mask, bs, num_choices, train):
             outs = mlp(pairs).view(bs, -1)
     outs = m(outs)
     res = []
-    st, ed = 0, 2
-    for i in range(2):
+    st, ed = 0, tot - 1
+    for i in range(tot-1):
         res.append(single_outs[:, i].view(bs, -1) * outs[:, st:ed])
         st = ed
-        ed += (2-i-1)
+        ed += (tot-i-2)
     res = torch.cat(res, dim=1)
     return outs
 
@@ -170,9 +170,10 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
         if key != "contexts" and key != "answers":
             batch[key] = batch[key].to(device)
     bs = len(batch["answers"])
-    num_choices = len(batch['input_ids'][0])
-    lm_outputs, attention_mask = run_lm(layers[0], batch, bs, num_choices, train=train)
-    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, num_choices, train=train)
+    tot = len(batch['input_ids'][0])
+    num_choices = len(batch['contexts'][0])
+    lm_outputs, attention_mask = run_lm(layers[0], batch, bs, tot, train=train)
+    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, tot, train=train)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'])
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
