@@ -91,12 +91,6 @@ def run_para_model(layers, outputs, attention_mask, bs, tot, train):
     sentence_embeddings = mean_pooling(outputs, attention_mask)
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
     sentence_embeddings = sentence_embeddings.view(bs, tot, -1)
-    if train:
-        single_outs = linear(sentence_embeddings).view(bs, -1)
-    else:
-        with torch.no_grad():
-            single_outs = linear(sentence_embeddings).view(bs, -1)
-    single_outs = m(single_outs)
     combs = torch.combinations(torch.arange(tot))
     C = len(combs)
     paired = sentence_embeddings[:,combs,:]
@@ -108,30 +102,7 @@ def run_para_model(layers, outputs, attention_mask, bs, tot, train):
         with torch.no_grad():
             outs = mlp(pairs).view(bs, -1)
     outs = m(outs)
-    res = []
-    st, ed = 0, tot - 1
-    for i in range(tot-1):
-        res.append(single_outs[:, i].view(bs, -1) * outs[:, st:ed])
-        st = ed
-        ed += (tot-i-2)
-    res = torch.cat(res, dim=1)
     return outs
-
-def process_para_outs(pouts, lm_outputs, raw_input_ids, bs, num_choices, max_p):
-    para_preds = pouts.argmax(dim=-1)
-    ijs = torch.stack([label2ij[x] for x in para_preds])
-    _, seq_len, emb_len = lm_outputs[0].shape
-    ids = torch.arange(bs)[:, None]
-    sent_in = lm_outputs[0].view(bs, num_choices, seq_len, emb_len)
-    if max_p:
-        sent_in = sent_in[ids, ijs]
-        input_ids = raw_input_ids[ids, ijs]
-        input_ids = input_ids.view(bs*2, seq_len)
-        sent_in = sent_in.view(bs*2, seq_len, -1)
-    else:
-        input_ids = raw_input_ids.view(bs*10, seq_len)
-        sent_in = sent_in.view(bs*10, seq_len, -1)
-    return input_ids, sent_in, ijs
 
 def pad_answers(tokenizer, contexts, raw_answers):
     contexts = [c for cs in contexts for c in cs]
@@ -197,7 +168,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     para_acc = []
     for step, eval_batch in enumerate(dataloader):
         bs = len(eval_batch["answers"])
-        num_choices = len(eval_batch['input_ids'][0])
+        num_choices = len(eval_batch['contexts'][0])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
         eval_outs, para_preds, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
