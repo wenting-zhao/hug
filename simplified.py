@@ -162,10 +162,10 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     exact_match = load_metric("exact_match")
     metric = load_metric("accuracy")
+    prior_exact_match = load_metric("exact_match")
+    prior_metric = load_metric("accuracy")
     layers[0].eval()
     answ_model.eval()
-    results = []
-    para_acc = []
     for step, eval_batch in enumerate(dataloader):
         bs = len(eval_batch["answers"])
         num_choices = len(eval_batch['contexts'][0])
@@ -181,29 +181,46 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         scores = (scores*mask).sum(dim=-1)/mask.sum(dim=-1)
         scores = scores * para_preds
         idxes = scores.argmax(dim=-1).view(-1, 1)
-        eval_outs = eval_outs[torch.arange(len(eval_outs))[:,None], idxes]
-        eval_outs = eval_outs.view(bs, -1)
-        preds = tok.batch_decode(eval_outs, skip_special_tokens=True)
+        pos_eval_outs = eval_outs[torch.arange(len(eval_outs))[:,None], idxes]
+        pos_eval_outs = pos_eval_outs.view(bs, -1)
+        preds = tok.batch_decode(pos_eval_outs, skip_special_tokens=True)
         gold = [normalize_answer(s) for s in gold]
         preds = [normalize_answer(s) for s in preds]
         exact_match.add_batch(
             predictions=preds,
             references=gold,
         )
-        predictions = para_preds.argmax(dim=-1)
+        predictions = idxes.view(-1)
         labels = [0] * len(predictions)
         metric.add_batch(
             predictions=predictions,
             references=labels,
         )
-        results.append(eval_outs)
-    eval_metric = exact_match.compute()
-    para_acc = metric.compute()
+        predictions = para_preds.argmax(dim=-1)
+        prior_metric.add_batch(
+            predictions=predictions,
+            references=labels,
+        )
+        idxes = predictions.view(-1, 1)
+        prior_eval_outs = eval_outs[torch.arange(len(eval_outs))[:,None], idxes]
+        prior_eval_outs = prior_eval_outs.view(bs, -1)
+        preds = tok.batch_decode(prior_eval_outs, skip_special_tokens=True)
+        preds = [normalize_answer(s) for s in preds]
+        prior_exact_match.add_batch(
+            predictions=preds,
+            references=gold,
+        )
+    pos_eval_metric = exact_match.compute()
+    pos_para_acc = metric.compute()
+    prior_eval_metric = prior_exact_match.compute()
+    prior_para_acc = prior_metric.compute()
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Para": para_acc,
-            f"{split} Acc": eval_metric})
+            f"{split} Prior Para": prior_para_acc,
+            f"{split} Prior Acc": prior_eval_metric,
+            f"{split} Posterior Para": pos_para_acc,
+            f"{split} Posterior Acc": pos_eval_metric})
     if args.save_results:
         torch.save(results, f"logging/{args.run_name}|step-{steps}.pt")
     return eval_metric['exact_match']
