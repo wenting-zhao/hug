@@ -87,7 +87,7 @@ def run_lm(model, batch, bs, tot, train):
 
 def run_para_model(layers, outputs, attention_mask, bs, tot, train):
     linear, mlp = layers
-    m = nn.Softmax(dim=-1)
+    m = nn.LogSoftmax(dim=-1)
     sentence_embeddings = mean_pooling(outputs, attention_mask)
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
     sentence_embeddings = sentence_embeddings.view(bs, tot, -1)
@@ -150,7 +150,6 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
     if train:
         loss = answ_out.loss.view(bs, num_choices, -1)
-        pouts = torch.log(pouts)
         loss = (-loss).sum(dim=-1)
         loss += pouts
         loss = torch.logsumexp(loss, dim=-1)
@@ -176,10 +175,10 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         eval_outs, scores = eval_outs
         eval_outs = eval_outs.view(bs, num_choices, -1)
         scores = scores.view(bs, num_choices, -1)
-        scores = torch.exp(-scores)
-        mask = scores!=1
+        scores = -scores
+        mask = scores!=0
         scores = (scores*mask).sum(dim=-1)/mask.sum(dim=-1)
-        scores = scores * para_preds
+        scores = scores + para_preds
         idxes = scores.argmax(dim=-1).view(-1, 1)
         pos_eval_outs = eval_outs[torch.arange(len(eval_outs))[:,None], idxes]
         pos_eval_outs = pos_eval_outs.view(bs, -1)
@@ -223,7 +222,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             f"{split} Posterior Acc": pos_eval_metric})
     if args.save_results:
         torch.save(results, f"logging/{args.run_name}|step-{steps}.pt")
-    return eval_metric['exact_match']
+    return pos_eval_metric['exact_match']
 
 
 def main():
