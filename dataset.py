@@ -108,7 +108,7 @@ def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fi
     data["labels"] = remained
     fname = f"cache/hotpotqa_simplified_encodings_{k}.pkl"
     if fixed > 0:
-        fname = fname.replace(f".pkl", "_fixed{fixed}.pkl")
+        fname = fname.replace(".pkl", f"_fixed{fixed}.pkl")
 
     if split == "train":
         if os.path.isfile(fname):
