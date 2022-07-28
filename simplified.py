@@ -64,8 +64,8 @@ def prepare_model(args):
     return [model, linear, mlp]
 
 def prepare_dataloader(data, tok, answer_tok, args):
-    paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor)
-    tparas, tsupps, tansws = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor)
+    paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph)
+    tparas, tsupps, tansws = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph)
     train_dataset = SimplifiedHotpotQADataset(paras[0], supps[0], answs[0])
     eval_dataset = SimplifiedHotpotQADataset(paras[1], supps[1], answs[1])
     test_dataset = SimplifiedHotpotQADataset(tparas, tsupps, tansws)

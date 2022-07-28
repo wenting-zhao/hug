@@ -30,7 +30,7 @@ def correct_format(ps):
         out = ps[:10]
     return out
 
-def preprocess_simplified_function(examples, tok, answ_tok, max_sent):
+def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed):
     paragraphs = []
     supps = []
     for context, labels, q, supp in zip(examples["context"], examples["labels"], examples["question"], examples['supporting_facts']):
@@ -53,15 +53,20 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent):
                     print("INDEX OUT OF RANGE", sid, len(sents[y]))
                     continue
                 tmp[y].append(sid)
-        ps = [[sents[x][i] for i in tmp[x]], [sents[y][i] for i in tmp[y]]]
-        len0 = len(ps[0])
-        len1 = len(ps[1])
-        for i in labels[2:]:
-            rand = random.random()
-            if rand >= 0.5:
-                ps.append(sents[i][:len0])
-            else:
-                ps.append(sents[i][:len1])
+        if fixed:
+            ps = []
+            for l in labels:
+                ps.append(sents[l][:fixed])
+        else:
+            ps = [[sents[x][i] for i in tmp[x]], [sents[y][i] for i in tmp[y]]]
+            len0 = len(ps[0])
+            len1 = len(ps[1])
+            for i in labels[2:]:
+                rand = random.random()
+                if rand >= 0.5:
+                    ps.append(sents[i][:len0])
+                else:
+                    ps.append(sents[i][:len1])
         ps = [' '.join(p) for p in ps]
         paragraphs += [f"{q} {tok.sep_token} {p}" for p in ps]
         for i in range(len(labels)):
@@ -80,7 +85,7 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent):
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
     return tokenized_paras, tokenized_supps, tokenized_answers
 
-def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, baseline=False):
+def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixed=False, baseline=False):
     print("preparing simplified")
     data = data[split][:]
 
@@ -101,17 +106,20 @@ def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, ba
         l += distractor
         remained.append(l)
     data["labels"] = remained
+    fname = f"cache/hotpotqa_simplified_encodings_{k}.pkl"
+    if fixed > 0:
+        fname = fname.replace(f".pkl", "_fixed{fixed}.pkl")
 
     if split == "train":
-        if os.path.isfile(f"cache/hotpotqa_simplified_encodings_{k}.pkl"):
-            with open(f"cache/hotpotqa_simplified_encodings_{k}.pkl", 'rb') as f:
+        if os.path.isfile(fname):
+            with open(fname, 'rb') as f:
                 paras, supps, answers = pickle.load(f)
         else:
-            paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent)
-            with open(f"cache/hotpotqa_simplified_encodings_{k}.pkl", 'wb') as f:
+            paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
+            with open(fname, 'wb') as f:
                 pickle.dump((paras, supps, answers), f)
     else:
-        paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent)
+        paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
 
     if split == "train":
         paras, _ = split_data(paras, answers)
