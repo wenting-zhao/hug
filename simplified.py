@@ -258,7 +258,7 @@ def main():
     best_valid = float('-inf')
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
-            if completed_steps % args.eval_steps == 0 and completed_steps > 0:
+            if completed_steps % args.eval_steps == 0 and completed_steps > 0 and step % args.gradient_accumulation_steps == 0:
                 valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
                                          tokenizer, answer_tokenizer, eval_dataloader, "Valid")
                 evaluate(completed_steps, args, all_layers, answer_model,
