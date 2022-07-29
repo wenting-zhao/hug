@@ -165,6 +165,11 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     prior_metric = load_metric("accuracy")
     layers[0].eval()
     answ_model.eval()
+    prior_ents = []
+    pos_ents = []
+    if args.save_results and split == "Valid":
+        para_results = []
+        answ_results = []
     for step, eval_batch in enumerate(dataloader):
         bs = len(eval_batch["answers"])
         num_choices = len(eval_batch['contexts'][0])
@@ -185,6 +190,8 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         preds = tok.batch_decode(pos_eval_outs, skip_special_tokens=True)
         gold = [normalize_answer(s) for s in gold]
         preds = [normalize_answer(s) for s in preds]
+        if args.save_results and split == "Valid":
+            answ_results.append((preds, gold))
         exact_match.add_batch(
             predictions=preds,
             references=gold,
@@ -195,11 +202,16 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             predictions=predictions,
             references=labels,
         )
+        normal_scores = torch.exp(scores)
+        pos_entropy = -torch.sum(normal_scores * torch.log(normal_scores + 1e-9), dim = 1)
+        pos_ents += pos_entropy.cpu().tolist()
         predictions = para_preds.argmax(dim=-1)
         prior_metric.add_batch(
             predictions=predictions,
             references=labels,
         )
+        if args.save_results and split == "Valid":
+            para_results += predictions.cpu().tolist()
         idxes = predictions.view(-1, 1)
         prior_eval_outs = eval_outs[torch.arange(len(eval_outs))[:,None], idxes]
         prior_eval_outs = prior_eval_outs.view(bs, -1)
@@ -209,6 +221,9 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             predictions=preds,
             references=gold,
         )
+        normal_scores = torch.exp(para_preds)
+        prior_entropy = -torch.sum(normal_scores * torch.log(normal_scores + 1e-9), dim = 1)
+        prior_ents += prior_entropy.cpu().tolist()
     pos_eval_metric = exact_match.compute()
     pos_para_acc = metric.compute()
     prior_eval_metric = prior_exact_match.compute()
@@ -216,12 +231,14 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     if not args.nolog:
         wandb.log({
             "step": steps,
+            f"{split} Prior Entropy": sum(prior_ents) / len(prior_ents),
+            f"{split} Posterior Entropy": sum(pos_ents) / len(pos_ents),
             f"{split} Prior Para": prior_para_acc,
             f"{split} Prior Acc": prior_eval_metric,
             f"{split} Posterior Para": pos_para_acc,
             f"{split} Posterior Acc": pos_eval_metric})
-    if args.save_results:
-        torch.save(results, f"logging/{args.run_name}|step-{steps}.pt")
+    if args.save_results and split == "Valid":
+        torch.save((para_results, answ_results), f"logging/{args.run_name}|step-{steps}.pt")
     return pos_eval_metric['exact_match']
 
 
