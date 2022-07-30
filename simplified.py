@@ -152,8 +152,13 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
         loss = answ_out.loss.view(bs, num_choices, -1)
         loss = (-loss).sum(dim=-1)
         loss += pouts
+        if reg_coeff > 0:
+            normalized = torch.exp(loss)
         loss = torch.logsumexp(loss, dim=-1)
         loss = -loss.mean()
+        if reg_coeff > 0:
+            entropy = torch.mean(-torch.sum(normalized * torch.log(normalized + 1e-9), dim = 1), dim = 0)
+            loss += reg_coeff * entropy
     else:
         loss = 0.
     return answ_out, pouts, loss
@@ -250,7 +255,7 @@ def main():
     train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam}'
+    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} reg-{args.reg_coeff}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
@@ -266,7 +271,7 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup_simplified',
+               project='hotpotqa_unsup_simplified_entropy_test',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])
