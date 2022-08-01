@@ -80,7 +80,7 @@ def run_lm(model, batch, bs, tot):
     outputs = model(input_ids=input_ids, attention_mask=attention_mask)
     return outputs, attention_mask
 
-def run_para_model(mlp, outputs, attention_mask, bs, tot, train):
+def run_para_model(mlp, outputs, attention_mask, bs, tot):
     m = nn.LogSoftmax(dim=-1)
     sentence_embeddings = mean_pooling(outputs, attention_mask)
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
