@@ -63,8 +63,8 @@ def prepare_model(args):
     return [model, mlp]
 
 def prepare_dataloader(data, tok, answer_tok, args):
-    paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph)
-    tparas, tsupps, tansws = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph)
+    paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
+    tparas, tsupps, tansws = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
     train_dataset = SimplifiedHotpotQADataset(paras[0], supps[0], answs[0])
     eval_dataset = SimplifiedHotpotQADataset(paras[1], supps[1], answs[1])
     test_dataset = SimplifiedHotpotQADataset(tparas, tsupps, tansws)
@@ -258,7 +258,7 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup_simplified_entropy_test',
+               project='hotpotqa_unsup_simplified_fixed_eval',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])

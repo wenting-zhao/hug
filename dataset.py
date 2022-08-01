@@ -30,6 +30,46 @@ def correct_format(ps):
         out = ps[:10]
     return out
 
+def preprocess_simplified_sent_function(examples, tok, answ_tok, max_sent, fixed):
+    supps = []
+    lengths = []
+    for context, labels, q, supp in zip(examples["context"], examples["labels"], examples["question"], examples['supporting_facts']):
+        ts = context["title"]
+        sents = context["sentences"]
+        # correct paragrpah indices
+        x, y = labels[:2]
+        tmp = defaultdict(list)
+        for t, sid in zip(supp["title"], supp["sent_id"]):
+            if t == ts[x]:
+                if sid >= len(sents[x]):
+                    print("INDEX OUT OF RANGE", sid, len(sents[x]))
+                    continue
+                tmp[x].append(sid)
+            else:
+                if sid >= len(sents[y]):
+                    print("INDEX OUT OF RANGE", sid, len(sents[y]))
+                    continue
+                tmp[y].append(sid)
+        not_supps0 = [sents[x][i] for i in range(len(sents[x])) if i not in tmp[x]]
+        not_supps1 = [sents[y][i] for i in range(len(sents[y])) if i not in tmp[y]]
+        gold0 = [sents[x][i] for i in tmp[x]]
+        gold1 = [sents[y][i] for i in tmp[y]]
+        if len(not_supps0) != 0 or len(not_supp1) != 0:
+            distractor0 = 0
+        curr_supps = [' '.join(p) for p in ps]
+        for i in range(len(labels)):
+            ps[i] = f'{ts[labels[i]]}: {ps[i]}'
+    para_length = len(labels)
+    supp_length = len(list(combinations(labels, 2)))
+    tokenized_paras = tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_paras = [tokenized_paras[i:i+para_length] for i in range(0, len(tokenized_paras), para_length)]
+    answers = [a for a in examples['answer']]
+    tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = [tokenized_supps[i:i+supp_length] for i in range(0, len(tokenized_supps), supp_length)]
+    assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
+    return tokenized_paras, tokenized_supps, tokenized_answers
+
 def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed):
     paragraphs = []
     supps = []
@@ -85,7 +125,7 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed):
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
     return tokenized_paras, tokenized_supps, tokenized_answers
 
-def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixed=False, baseline=False):
+def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixed=False, sentence=False, baseline=False):
     print("preparing simplified")
     data = data[split][:]
 
@@ -106,20 +146,25 @@ def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fi
         l += distractor
         remained.append(l)
     data["labels"] = remained
-    fname = f"cache/hotpotqa_simplified_encodings_{k}.pkl"
-    if fixed > 0:
-        fname = fname.replace(".pkl", f"_fixed{fixed}.pkl")
+    if sentence:
+        fname = f"cache/hotpotqa_simplified_sent_encodings.pkl"
+        proc_function = preprocess_simplified_sent_function
+    else:
+        fname = f"cache/hotpotqa_simplified_encodings_{k}.pkl"
+        if fixed > 0:
+            fname = fname.replace(".pkl", f"_fixed{fixed}.pkl")
+        proc_function = preprocess_simplified_function
 
     if split == "train":
         if os.path.isfile(fname):
             with open(fname, 'rb') as f:
                 paras, supps, answers = pickle.load(f)
         else:
-            paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
+            paras, supps, answers = proc_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
             with open(fname, 'wb') as f:
                 pickle.dump((paras, supps, answers), f)
     else:
-        paras, supps, answers = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
+        paras, supps, answers = proc_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
 
     if split == "train":
         paras, _ = split_data(paras, answers)
