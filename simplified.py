@@ -59,9 +59,8 @@ class DataCollatorForMultipleChoice:
 def prepare_model(args):
     model = AutoModel.from_pretrained(args.model_dir)
     model = model.to(device)
-    linear = prepare_linear(model.config.hidden_size)
     mlp = prepare_mlp(model.config.hidden_size*3)
-    return [model, linear, mlp]
+    return [model, mlp]
 
 def prepare_dataloader(data, tok, answer_tok, args):
     paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph)
@@ -85,8 +84,7 @@ def run_lm(model, batch, bs, tot, train):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
     return outputs, attention_mask
 
-def run_para_model(layers, outputs, attention_mask, bs, tot, train):
-    linear, mlp = layers
+def run_para_model(mlp, outputs, attention_mask, bs, tot, train):
     m = nn.LogSoftmax(dim=-1)
     sentence_embeddings = mean_pooling(outputs, attention_mask)
     sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
@@ -144,7 +142,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     tot = len(batch['input_ids'][0])
     num_choices = len(batch['contexts'][0])
     lm_outputs, attention_mask = run_lm(layers[0], batch, bs, tot, train=train)
-    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, tot, train=train)
+    pouts = run_para_model(layers[1], lm_outputs, attention_mask, bs, tot, train=train)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'])
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
