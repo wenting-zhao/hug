@@ -265,6 +265,8 @@ def main():
         wandb.watch(answer_model)
 
     best_valid = float('-inf')
+    all_layers[0].train()
+    answer_model.train()
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if completed_steps % args.eval_steps == 0 and completed_steps > 0 and step % args.gradient_accumulation_steps == 0:
