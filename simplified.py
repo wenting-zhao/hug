@@ -75,17 +75,13 @@ def prepare_dataloader(data, tok, answer_tok, args):
     test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
     return train_dataloader, eval_dataloader, test_dataloader
 
-def run_lm(model, batch, bs, tot, train):
+def run_lm(model, batch, bs, tot):
     input_ids = batch["input_ids"].view(bs*tot, -1)
     attention_mask = batch["attention_mask"].view(bs*tot, -1)
-    if train:
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    else:
-        with torch.no_grad():
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
     return outputs, attention_mask
 
-def run_para_model(layers, outputs, attention_mask, bs, tot, train):
+def run_para_model(layers, outputs, attention_mask, bs, tot):
     linear, mlp = layers
     m = nn.LogSoftmax(dim=-1)
     sentence_embeddings = mean_pooling(outputs, attention_mask)
@@ -96,11 +92,7 @@ def run_para_model(layers, outputs, attention_mask, bs, tot, train):
     paired = sentence_embeddings[:,combs,:]
     diff = torch.abs(paired[:,:,0] - paired[:,:,1])
     pairs = torch.cat([paired.view(bs,C,-1), diff], dim=-1).view(-1, 3*sentence_embeddings.shape[-1])
-    if train:
-        outs = mlp(pairs).view(bs, -1)
-    else:
-        with torch.no_grad():
-            outs = mlp(pairs).view(bs, -1)
+    outs = mlp(pairs).view(bs, -1)
     outs = m(outs)
     return outs
 
@@ -130,10 +122,9 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
-        with torch.no_grad():
-            outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
-            scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
-            outputs = (outputs, scores)
+        outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
+        scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
+        outputs = (outputs, scores)
     return outputs
 
 def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, train=True):
@@ -143,8 +134,8 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     bs = len(batch["answers"])
     tot = len(batch['input_ids'][0])
     num_choices = len(batch['contexts'][0])
-    lm_outputs, attention_mask = run_lm(layers[0], batch, bs, tot, train=train)
-    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, tot, train=train)
+    lm_outputs, attention_mask = run_lm(layers[0], batch, bs, tot)
+    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, tot)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'])
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
@@ -168,8 +159,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     metric = load_metric("accuracy")
     prior_exact_match = load_metric("exact_match")
     prior_metric = load_metric("accuracy")
-    layers[0].eval()
-    answ_model.eval()
     prior_ents = []
     pos_ents = []
     if args.save_results and split == "Valid":
@@ -281,10 +270,13 @@ def main():
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if completed_steps % args.eval_steps == 0 and completed_steps > 0 and step % args.gradient_accumulation_steps == 0:
-                valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
-                                         tokenizer, answer_tokenizer, eval_dataloader, "Valid")
-                evaluate(completed_steps, args, all_layers, answer_model,
-                             tokenizer, answer_tokenizer, test_dataloader, "Test")
+                all_layers[0].eval()
+                answer_model.eval()
+                with torch.no_grad():
+                    valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
+                                             tokenizer, answer_tokenizer, eval_dataloader, "Valid")
+                    evaluate(completed_steps, args, all_layers, answer_model,
+                                 tokenizer, answer_tokenizer, test_dataloader, "Test")
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
