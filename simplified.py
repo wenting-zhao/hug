@@ -133,7 +133,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     tot = len(batch['input_ids'][0])
     num_choices = len(batch['contexts'][0])
     lm_outputs, attention_mask = run_lm(layers[0], batch, bs, tot)
-    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, tot)
+    pouts = run_para_model(layers[1], lm_outputs, attention_mask, bs, tot)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'])
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
