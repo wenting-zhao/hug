@@ -152,21 +152,20 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
         loss = answ_out.loss.view(bs, num_choices, -1)
         loss = (-loss).sum(dim=-1)
         loss = torch.add(pouts, loss)
-        if reg_coeff > 0:
-            p_single = pouts[:, marginal]
-            p_single = torch.logsumexp(p_single, dim=-1)
-            pa_single = loss[:, marginal]
-            pa_single = torch.logsumexp(pa_single, dim=-1)
-            a = torch.logsumexp(loss, dim=-1)
-            a = a.view(-1, 1).repeat(1, tot)
-            pa_product = torch.add(p_single, a)
-            flipped_prod = torch.log(1 - torch.exp(pa_product))
-            pa_product = torch.cat([pa_product.view(-1, 1), flipped_prod.view(-1, 1)], dim=1)
-            flipped_pa = torch.log(1 - torch.exp(pa_single))
-            pa_single = torch.cat([pa_single.view(-1, 1), flipped_pa.view(-1, 1)], dim=1)
-            mi = kl_loss(pa_single, pa_product)
-            mi = mi.sum(dim=-1).view(bs, tot)
-            mi = mi.sum(dim=-1).mean(dim=-1)
+        p_single = pouts[:, marginal]
+        p_single = torch.logsumexp(p_single, dim=-1)
+        pa_single = loss[:, marginal]
+        pa_single = torch.logsumexp(pa_single, dim=-1)
+        a = torch.logsumexp(loss, dim=-1)
+        a = a.view(-1, 1).repeat(1, tot)
+        pa_product = torch.add(p_single, a)
+        flipped_prod = torch.log(1 - torch.exp(pa_product))
+        pa_product = torch.cat([pa_product.view(-1, 1), flipped_prod.view(-1, 1)], dim=1)
+        flipped_pa = torch.log(1 - torch.exp(pa_single))
+        pa_single = torch.cat([pa_single.view(-1, 1), flipped_pa.view(-1, 1)], dim=1)
+        mi = kl_loss(pa_single, pa_product)
+        mi = mi.sum(dim=-1).view(bs, tot)
+        mi = mi.sum(dim=-1).mean(dim=-1)
         loss = torch.logsumexp(loss, dim=-1)
         loss = -loss.mean()
         if reg_coeff > 0:
