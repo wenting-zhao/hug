@@ -22,6 +22,16 @@ from utils import prepare_linear, prepare_mlp, prepare_optim_and_scheduler
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
 
+NUM_P = 10
+marginal = [[] for _ in range(NUM_P)]
+cnt = 0
+for i in range(NUM_P):
+    for j in range(i+1, NUM_P):
+        marginal[i].append(cnt)
+        marginal[j].append(cnt)
+        cnt += 1
+marginal = torch.tensor(marginal, dtype=torch.long).to(device)
+
 @dataclass
 class DataCollatorForMultipleChoice:
     tokenizer: PreTrainedTokenizerBase
@@ -126,6 +136,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
     return outputs
 
 def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, train=True):
+    kl_loss = nn.KLDivLoss(reduction="none", log_target=True)
     for key in batch:
         if key != "contexts" and key != "answers":
             batch[key] = batch[key].to(device)
@@ -140,17 +151,32 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     if train:
         loss = answ_out.loss.view(bs, num_choices, -1)
         loss = (-loss).sum(dim=-1)
-        loss += pouts
+        loss = torch.add(pouts, loss)
+        if reg_coeff > 0:
+            p_single = pouts[:, marginal]
+            p_single = torch.logsumexp(p_single, dim=-1)
+            pa_single = loss[:, marginal]
+            pa_single = torch.logsumexp(pa_single, dim=-1)
+            a = torch.logsumexp(loss, dim=-1)
+            a = a.view(-1, 1).repeat(1, tot)
+            pa_product = torch.add(p_single, a)
+            flipped_prod = torch.log(1 - torch.exp(pa_product))
+            pa_product = torch.cat([pa_product.view(-1, 1), flipped_prod.view(-1, 1)], dim=1)
+            flipped_pa = torch.log(1 - torch.exp(pa_single))
+            pa_single = torch.cat([pa_single.view(-1, 1), flipped_pa.view(-1, 1)], dim=1)
+            mi = kl_loss(pa_single, pa_product)
+            mi = mi.sum(dim=-1).view(bs, tot)
+            mi = mi.sum(dim=-1).mean(dim=-1)
         if reg_coeff > 0:
             normalized = torch.exp(loss)
         loss = torch.logsumexp(loss, dim=-1)
         loss = -loss.mean()
         if reg_coeff > 0:
-            entropy = torch.mean(-torch.sum(normalized * torch.log(normalized + 1e-9), dim = 1), dim = 0)
-            loss += reg_coeff * entropy
+            reg = reg_coeff * mi
+            loss += reg
     else:
         loss = 0.
-    return answ_out, pouts, loss
+    return answ_out, pouts, loss, reg
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     exact_match = load_metric("exact_match")
@@ -166,7 +192,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         bs = len(eval_batch["answers"])
         num_choices = len(eval_batch['contexts'][0])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
-        eval_outs, para_preds, _ = run_model(
+        eval_outs, para_preds, _, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False, beam=args.beam)
         eval_outs, scores = eval_outs
@@ -258,7 +284,7 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup_simplified_fixed_eval',
+               project='hotpotqa_unsup_simplified_mi',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])
@@ -283,7 +309,7 @@ def main():
                         all_layers[0].save_pretrained(f"{args.output_model_dir}/{run_name}")
                 all_layers[0].train()
                 answer_model.train()
-            _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
+            _, _, loss, reg = run_model(batch, all_layers, answer_model, tokenizer,
                     answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -295,6 +321,7 @@ def main():
                 if not args.nolog:
                     wandb.log({
                         "step": completed_steps,
+                        "MI Reg": reg.item(),
                         "Train Loss": loss.item()})
 
 if __name__ == '__main__':
