@@ -167,8 +167,6 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
             mi = kl_loss(pa_single, pa_product)
             mi = mi.sum(dim=-1).view(bs, tot)
             mi = mi.sum(dim=-1).mean(dim=-1)
-        if reg_coeff > 0:
-            normalized = torch.exp(loss)
         loss = torch.logsumexp(loss, dim=-1)
         loss = -loss.mean()
         if reg_coeff > 0:
