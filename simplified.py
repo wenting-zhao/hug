@@ -174,6 +174,8 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
         if reg_coeff > 0:
             reg = reg_coeff * mi
             loss += reg
+        else:
+            reg = mi
     else:
         loss, reg = 0., 0.
     return answ_out, pouts, loss, reg
