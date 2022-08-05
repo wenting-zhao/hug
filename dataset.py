@@ -1,5 +1,5 @@
 from collections import defaultdict
-from itertools import combinations
+from itertools import combinations, product
 import pickle
 import random
 import os
@@ -30,9 +30,20 @@ def correct_format(ps):
         out = ps[:10]
     return out
 
+def supp_helper(sentences, title):
+    if len(sentences) >= 2:
+        s = [sentences[0], sentences[1], sentences[0]+sentences[1]]
+    else:
+        s = [sentences[0]]
+    for i in range(len(s)):
+        s[i] = f"{title}: {s[i]}"
+    return s
+
 def preprocess_simplified_sent_function(examples, tok, answ_tok, max_sent, fixed):
     supps = []
     lengths = []
+    found = 0
+    assert tok.sep_token == answ_tok.sep_token
     for context, labels, q, supp in zip(examples["context"], examples["labels"], examples["question"], examples['supporting_facts']):
         ts = context["title"]
         sents = context["sentences"]
@@ -50,15 +61,22 @@ def preprocess_simplified_sent_function(examples, tok, answ_tok, max_sent, fixed
                     print("INDEX OUT OF RANGE", sid, len(sents[y]))
                     continue
                 tmp[y].append(sid)
-        not_supps0 = [sents[x][i] for i in range(len(sents[x])) if i not in tmp[x]]
-        not_supps1 = [sents[y][i] for i in range(len(sents[y])) if i not in tmp[y]]
-        gold0 = [sents[x][i] for i in tmp[x]]
-        gold1 = [sents[y][i] for i in tmp[y]]
-        if len(not_supps0) != 0 or len(not_supp1) != 0:
-            distractor0 = 0
-        curr_supps = [' '.join(p) for p in ps]
-        for i in range(len(labels)):
-            ps[i] = f'{ts[labels[i]]}: {ps[i]}'
+        #not_supps0 = [sents[x][i] for i in range(len(sents[x])) if i not in tmp[x]]
+        #not_supps1 = [sents[y][i] for i in range(len(sents[y])) if i not in tmp[y]]
+        #gold0 = [sents[x][i] for i in tmp[x]]
+        #gold1 = [sents[y][i] for i in tmp[y]]
+        #if len(not_supps0) != 0 or len(not_supp1) != 0:
+        #    distractor0 = 0
+        if tmp[x] in [[0], [1], [0, 1]] and tmp[y] in [[0], [1], [0, 1]]:
+            found += 1
+        p1 = supp_helper(sents[x], ts[x])
+        p2 = supp_helper(sents[y], ts[y])
+        curr_supps = []
+        for m, n in product(p1, p2):
+            curr_supps.append(m+f" {tok.sep_token} "+n)
+        supps += curr_supps
+        lengths.append(len(curr_supps))
+    print(found / len(examples["question"]))
     para_length = len(labels)
     supp_length = len(list(combinations(labels, 2)))
     tokenized_paras = tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
