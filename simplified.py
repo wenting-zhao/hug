@@ -175,7 +175,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
             reg = reg_coeff * mi
             loss += reg
     else:
-        loss = 0.
+        loss, reg = 0., 0.
     return answ_out, pouts, loss, reg
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
