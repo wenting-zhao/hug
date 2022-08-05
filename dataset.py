@@ -129,11 +129,11 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed):
         paragraphs += [f"{q} {tok.sep_token} {p}" for p in ps]
         for i in range(len(labels)):
             ps[i] = f'{ts[labels[i]]}: {ps[i]}'
-        for (m, n) in combinations(ps, 2):
-            p = f"{q} {answ_tok.sep_token} {m} {answ_tok.sep_token} {n}"
+        for m in ps:
+            p = f"{q} {answ_tok.sep_token} {m}"
             supps.append(p)
     para_length = len(labels)
-    supp_length = len(list(combinations(labels, 2)))
+    supp_length = para_length
     tokenized_paras = tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_paras = [tokenized_paras[i:i+para_length] for i in range(0, len(tokenized_paras), para_length)]
     answers = [a for a in examples['answer']]
@@ -165,10 +165,10 @@ def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fi
         remained.append(l)
     data["labels"] = remained
     if sentence:
-        fname = f"cache/hotpotqa_simplified_sent_encodings.pkl"
+        fname = f"cache/baseline_hotpotqa_simplified_sent_encodings.pkl"
         proc_function = preprocess_simplified_sent_function
     else:
-        fname = f"cache/hotpotqa_simplified_encodings_{k}.pkl"
+        fname = f"cache/baseline_hotpotqa_simplified_encodings_{k}.pkl"
         if fixed > 0:
             fname = fname.replace(".pkl", f"_fixed{fixed}.pkl")
         proc_function = preprocess_simplified_function

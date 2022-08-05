@@ -17,7 +17,7 @@ from torch.optim import AdamW
 from torch import nn
 import wandb
 from utils import get_args, load_hotpotqa, mean_pooling, padding, normalize_answer
-from utils import prepare_linear, prepare_mlp, prepare_optim_and_scheduler
+from utils import prepare_linear, prepare_optim_and_scheduler
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -59,8 +59,8 @@ class DataCollatorForMultipleChoice:
 def prepare_model(args):
     model = AutoModel.from_pretrained(args.model_dir)
     model = model.to(device)
-    mlp = prepare_mlp(model.config.hidden_size*3)
-    return [model, mlp]
+    linear = prepare_linear(model.config.hidden_size)
+    return [model, linear]
 
 def prepare_dataloader(data, tok, answer_tok, args):
     paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
@@ -74,25 +74,19 @@ def prepare_dataloader(data, tok, answer_tok, args):
     test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
     return train_dataloader, eval_dataloader, test_dataloader
 
-def run_lm(model, batch, bs, tot):
+def run_lm(model, batch, bs, tot, train=True):
+    model, linear = model
+    m = nn.LogSoftmax(dim=-1)
     input_ids = batch["input_ids"].view(bs*tot, -1)
     attention_mask = batch["attention_mask"].view(bs*tot, -1)
     outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    return outputs, attention_mask
-
-def run_para_model(mlp, outputs, attention_mask, bs, tot):
-    m = nn.LogSoftmax(dim=-1)
-    sentence_embeddings = mean_pooling(outputs, attention_mask)
-    sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
-    sentence_embeddings = sentence_embeddings.view(bs, tot, -1)
-    combs = torch.combinations(torch.arange(tot))
-    C = len(combs)
-    paired = sentence_embeddings[:,combs,:]
-    diff = torch.abs(paired[:,:,0] - paired[:,:,1])
-    pairs = torch.cat([paired.view(bs,C,-1), diff], dim=-1).view(-1, 3*sentence_embeddings.shape[-1])
-    outs = mlp(pairs).view(bs, -1)
-    outs = m(outs)
-    return outs
+    pooled_output = outputs[1]
+    if train:
+        dropout = nn.Dropout(model.config.hidden_dropout_prob)
+        pooled_output = dropout(pooled_output)
+    logits = linear(pooled_output)
+    reshaped_logits = logits.view(-1, tot)
+    return m(reshaped_logits)
 
 def pad_answers(tokenizer, contexts, raw_answers):
     contexts = [c for cs in contexts for c in cs]
@@ -132,8 +126,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     bs = len(batch["answers"])
     tot = len(batch['input_ids'][0])
     num_choices = len(batch['contexts'][0])
-    lm_outputs, attention_mask = run_lm(layers[0], batch, bs, tot)
-    pouts = run_para_model(layers[1], lm_outputs, attention_mask, bs, tot)
+    pouts = run_lm(layers, batch, bs, tot, train=train)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'])
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
@@ -154,9 +147,9 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     exact_match = load_metric("exact_match")
-    metric = load_metric("accuracy")
+    metric = load_metric("accuracy", "multilabel")
     prior_exact_match = load_metric("exact_match")
-    prior_metric = load_metric("accuracy")
+    prior_metric = load_metric("accuracy", "multilabel")
     prior_ents = []
     pos_ents = []
     if args.save_results and split == "Valid":
@@ -188,18 +181,28 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             predictions=preds,
             references=gold,
         )
-        predictions = idxes.view(-1)
-        labels = [0] * len(predictions)
+        top2 = torch.topk(scores, 2)[0][:, -1].view(-1, 1)
+        para_tmp = scores.clone().detach()
+        para_tmp[para_tmp>=top2] = 1
+        para_tmp[para_tmp!=1] = 0
+        para_tmp = para_tmp.int().cpu().tolist()
+        labels = [1] * 2 + [0] * 8
+        labels = [labels for _ in range(len(para_tmp))]
         metric.add_batch(
-            predictions=predictions,
+            predictions=para_tmp,
             references=labels,
         )
         normal_scores = torch.exp(scores)
         pos_entropy = -torch.sum(normal_scores * torch.log(normal_scores + 1e-9), dim = 1)
         pos_ents += pos_entropy.cpu().tolist()
         predictions = para_preds.argmax(dim=-1)
+        top2 = torch.topk(para_preds, 2)[0][:, -1].view(-1, 1)
+        para_tmp = para_preds.clone().detach()
+        para_tmp[para_tmp>=top2] = 1
+        para_tmp[para_tmp!=1] = 0
+        para_tmp = para_tmp.int().cpu().tolist()
         prior_metric.add_batch(
-            predictions=predictions,
+            predictions=para_tmp,
             references=labels,
         )
         if args.save_results and split == "Valid":
@@ -258,7 +261,7 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup_simplified_fixed_eval',
+               project='hotpotqa_unsup_simplified_independent_baseline',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])
