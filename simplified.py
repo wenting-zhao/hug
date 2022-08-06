@@ -63,11 +63,13 @@ def prepare_model(args):
     return [model, mlp]
 
 def prepare_dataloader(data, tok, answer_tok, args):
-    paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
-    tparas, tsupps, tansws = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
-    train_dataset = SimplifiedHotpotQADataset(paras[0], supps[0], answs[0])
-    eval_dataset = SimplifiedHotpotQADataset(paras[1], supps[1], answs[1])
-    test_dataset = SimplifiedHotpotQADataset(tparas, tsupps, tansws)
+    paras, supps, answs, pmasks, smasks = prepare_simplified(tok, answer_tok, "train",
+            data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
+    tparas, tsupps, tansws, tpmasks, tsmasks = prepare_simplified(tok, answer_tok, "validation",
+            data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
+    train_dataset = SimplifiedHotpotQADataset(paras[0], supps[0], answs[0], pmasks[0], smasks[0])
+    eval_dataset = SimplifiedHotpotQADataset(paras[1], supps[1], answs[1], pmasks[1], smasks[1])
+    test_dataset = SimplifiedHotpotQADataset(tparas, tsupps, tansws, tpmasks, tsmasks)
     data_collator = DataCollatorForMultipleChoice(tok, padding='longest', max_length=512)
     train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.batch_size)
     eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
