@@ -70,6 +70,7 @@ def get_args():
     parser.add_argument("--answer_model_dir", default="facebook/bart-base", type=str,
                         help="The directory where the pretrained model will be loaded.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
+    parser.add_argument("--ent_dropout", type=float, default=0.0, help="Dropout rate for entities..")
     parser.add_argument("--output_model_dir", default="./saved_models", type=str,
                         help="The directory where the pretrained model will be saved.")
     parser.add_argument(

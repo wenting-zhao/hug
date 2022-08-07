@@ -44,16 +44,26 @@ class DataCollatorForMultipleChoice:
             return_tensors="pt",
         )
         # Un-flatten
+        max_len = len(batch['input_ids'][0])
         batch = {k: v.view(batch_size, num_choices, -1) for k, v in batch.items()}
 
         answer_name = "answs"
         raw_answers = [feature.pop(answer_name) for feature in features]
         context_name = "supps"
         contexts = [feature.pop(context_name) for feature in features]
+        pmasks_name = "pmasks"
+        pmasks = [feature.pop(pmasks_name) for feature in features]
+        smasks_name = "smasks"
+        smasks = [feature.pop(smasks_name) for feature in features]
+        for i in range(len(pmasks)):
+            for j in range(len(pmasks[i])):
+                pmasks[i][j] = pmasks[i][j] + [0] * (max_len - len(pmasks[i][j]))
 
         # Add back labels
         batch['contexts'] = contexts
         batch['answers'] = raw_answers
+        batch['pmasks'] = torch.tensor(pmasks)
+        batch['smasks'] = smasks
         return batch
 
 def prepare_model(args):
@@ -76,9 +86,19 @@ def prepare_dataloader(data, tok, answer_tok, args):
     test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
     return train_dataloader, eval_dataloader, test_dataloader
 
-def run_lm(model, batch, bs, tot):
+def entity_dropout(ent_mask, attn_mask, p):
+    rand = torch.rand(ent_mask.size(), device=device)
+    a = (ent_mask == 0)
+    b = (rand < p)
+    mask = torch.where(torch.logical_and(a, b), ent_mask, 1)
+    return mask
+
+def run_lm(model, batch, bs, tot, p):
     input_ids = batch["input_ids"].view(bs*tot, -1)
     attention_mask = batch["attention_mask"].view(bs*tot, -1)
+    pmasks = batch["pmasks"].view(bs*tot, -1)
+    pmasks = entity_dropout(pmasks, attention_mask, p=p)
+    attention_mask = pmasks * attention_mask
     outputs = model(input_ids=input_ids, attention_mask=attention_mask)
     return outputs, attention_mask
 
@@ -96,7 +116,7 @@ def run_para_model(mlp, outputs, attention_mask, bs, tot):
     outs = m(outs)
     return outs
 
-def pad_answers(tokenizer, contexts, raw_answers):
+def pad_answers(tokenizer, contexts, raw_answers, smasks):
     contexts = [c for cs in contexts for c in cs]
     contexts = [{"input_ids": x} for x in contexts]
     out = tokenizer.pad(
@@ -115,7 +135,13 @@ def pad_answers(tokenizer, contexts, raw_answers):
     answers = answers.repeat(1, n)
     answers = answers.view(answers.shape[0]*n, -1) 
 
-    return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
+    max_len = len(out['input_ids'][0])
+    for i in range(len(smasks)):
+        for j in range(len(smasks[i])):
+            smasks[i][j] = smasks[i][j] + [0] * (max_len - len(smasks[i][j]))
+    smasks = torch.tensor(smasks, device=device)
+    smasks = smasks.view(out['input_ids'].shape[0], -1)
+    return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device), smasks
 
 def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train):
     answs[answs==model.config.pad_token_id] = -100
@@ -127,17 +153,19 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
         outputs = (outputs, scores)
     return outputs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, p=0, train=True):
     for key in batch:
-        if key != "contexts" and key != "answers":
+        if key != "contexts" and key != "answers" and key != "smasks":
             batch[key] = batch[key].to(device)
     bs = len(batch["answers"])
     tot = len(batch['input_ids'][0])
     num_choices = len(batch['contexts'][0])
-    lm_outputs, attention_mask = run_lm(layers[0], batch, bs, tot)
+    lm_outputs, attention_mask = run_lm(layers[0], batch, bs, tot, p=p)
     pouts = run_para_model(layers[1], lm_outputs, attention_mask, bs, tot)
-    answer_in, answer_attn, labels = pad_answers(
-            answer_tokenizer, batch["contexts"], batch['answers'])
+    answer_in, answer_attn, labels, smasks = pad_answers(
+            answer_tokenizer, batch["contexts"], batch['answers'], batch['smasks'])
+    smasks = entity_dropout(smasks, answer_attn, p=p)
+    answer_attn = answer_attn * smasks
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
     if train:
         loss = answ_out.loss.view(bs, num_choices, -1)
@@ -286,7 +314,7 @@ def main():
                 all_layers[0].train()
                 answer_model.train()
             _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
-                    answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p)
+                    answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p, p=args.ent_dropout)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()

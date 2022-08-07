@@ -96,9 +96,6 @@ def get_masks(original, masked):
             if x[i] not in y:
                 mask[i] = 0
         masks.append(mask)
-        print(x)
-        print(y)
-        print(mask)
     return masks
 
 def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed, entities):
@@ -176,7 +173,7 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed, ent
 
 def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixed=False, sentence=False, baseline=False):
     print("preparing simplified")
-    data = data[split]
+    data = data[split][:]
     entities = torch.load(f"cache/hotpotqa_{split}.pt")
 
     remained = []
