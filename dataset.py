@@ -168,6 +168,7 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed, ent
     smasks = get_masks(tokenized_supps, masked_supps)
     tokenized_supps = [tokenized_supps[i:i+supp_length] for i in range(0, len(tokenized_supps), supp_length)]
     smasks = [smasks[i:i+supp_length] for i in range(0, len(smasks), supp_length)]
+    print(len(tokenized_supps), len(tokenized_answers), len(tokenized_paras))
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
     return tokenized_paras, tokenized_supps, tokenized_answers, pmasks, smasks
 
@@ -194,24 +195,21 @@ def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fi
         remained.append(l)
     data["labels"] = remained
     if sentence:
-        fname = f"cache/hotpotqa_entities_simplified_sent_encodings.pkl"
+        fname = f"cache/hotpotqa_{split}_entities_simplified_sent_encodings.pkl"
         proc_function = preprocess_simplified_sent_function
     else:
-        fname = f"cache/hotpotqa_entities_simplified_encodings_{k}.pkl"
+        fname = f"cache/hotpotqa_{split}_entities_simplified_encodings_{k}.pkl"
         if fixed > 0:
             fname = fname.replace(".pkl", f"_fixed{fixed}.pkl")
         proc_function = preprocess_simplified_function
 
-    if split == "train":
-        if os.path.isfile(fname):
-            with open(fname, 'rb') as f:
-                paras, supps, answers, pmasks, smasks = pickle.load(f)
-        else:
-            paras, supps, answers, pmasks, smasks = proc_function(data, tokenizer, answ_tokenizer, max_sent, fixed, entities)
-            with open(fname, 'wb') as f:
-                pickle.dump((paras, supps, answers, pmasks, smasks), f)
+    if os.path.isfile(fname):
+        with open(fname, 'rb') as f:
+            paras, supps, answers, pmasks, smasks = pickle.load(f)
     else:
         paras, supps, answers, pmasks, smasks = proc_function(data, tokenizer, answ_tokenizer, max_sent, fixed, entities)
+        with open(fname, 'wb') as f:
+            pickle.dump((paras, supps, answers, pmasks, smasks), f)
 
     if split == "train":
         paras, supps, pmasks, smasks, answers = split_data(paras, supps, pmasks, smasks, answers)
