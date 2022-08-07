@@ -168,7 +168,6 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed, ent
     smasks = get_masks(tokenized_supps, masked_supps)
     tokenized_supps = [tokenized_supps[i:i+supp_length] for i in range(0, len(tokenized_supps), supp_length)]
     smasks = [smasks[i:i+supp_length] for i in range(0, len(smasks), supp_length)]
-    print(len(tokenized_supps), len(tokenized_answers), len(tokenized_paras))
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
     return tokenized_paras, tokenized_supps, tokenized_answers, pmasks, smasks
 
