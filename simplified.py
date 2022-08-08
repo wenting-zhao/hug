@@ -206,7 +206,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             references=labels,
         )
         if args.save_results and split == "Valid":
-            para_results += para_tmp.cpu().tolist()
+            para_results += para_tmp
         idxes = predictions.view(-1, 1)
         prior_eval_outs = eval_outs[torch.arange(len(eval_outs))[:,None], idxes]
         prior_eval_outs = prior_eval_outs.view(bs, -1)
