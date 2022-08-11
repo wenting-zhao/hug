@@ -89,7 +89,7 @@ def run_lm(model, batch, bs, train=True):
     logits = linear(pooled_output).view(-1)
     logits = sigmoid(logits)
     reshaped_logits = padding(batch["lengths"], logits).view(bs, -1)
-    logits = torch.logit(logits)
+    reshaped_logits = torch.logit(reshaped_logits)
     return m(reshaped_logits)
 
 def pad_answers(tokenizer, contexts, raw_answers):
