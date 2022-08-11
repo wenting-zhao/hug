@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import dataclass
 from itertools import chain
 from typing import Optional, Union
@@ -17,7 +18,7 @@ from torch.optim import AdamW
 from torch import nn
 import wandb
 from utils import get_args, load_hotpotqa, mean_pooling, padding, normalize_answer
-from utils import prepare_linear, prepare_optim_and_scheduler
+from utils import prepare_linear, prepare_optim_and_scheduler, padding
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -33,7 +34,9 @@ class DataCollatorForMultipleChoice:
         batch_size = len(features)
         num_choices = len(features[0]["paras"])
         paras = [feature.pop("paras") for feature in features]
-        paras = list(chain(*paras))
+        lengths = [[i] * len(paras[i]) for i in range(len(paras))]
+        lengths = [l for ls in lengths for l in ls]
+        paras = [p for ps in paras for p in ps]
         paras = [{"input_ids": x} for x in paras]
 
         batch = self.tokenizer.pad(
@@ -43,17 +46,19 @@ class DataCollatorForMultipleChoice:
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors="pt",
         )
-        # Un-flatten
-        batch = {k: v.view(batch_size, num_choices, -1) for k, v in batch.items()}
 
         answer_name = "answs"
         raw_answers = [feature.pop(answer_name) for feature in features]
         context_name = "supps"
         contexts = [feature.pop(context_name) for feature in features]
+        ds_name = "ds"
+        ds = [feature.pop(ds_name) for feature in features]
 
         # Add back labels
         batch['contexts'] = contexts
         batch['answers'] = raw_answers
+        batch['lengths'] = torch.tensor(lengths, dtype=torch.int64)
+        batch['ds'] = ds
         return batch
 
 def prepare_model(args):
@@ -63,49 +68,48 @@ def prepare_model(args):
     return [model, linear]
 
 def prepare_dataloader(data, tok, answer_tok, args):
-    paras, supps, answs = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
-    tparas, tsupps, tansws = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
-    train_dataset = SimplifiedHotpotQADataset(paras[0], supps[0], answs[0])
-    eval_dataset = SimplifiedHotpotQADataset(paras[1], supps[1], answs[1])
-    test_dataset = SimplifiedHotpotQADataset(tparas, tsupps, tansws)
+    paras, supps, answs, ds = prepare_simplified(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
+    tparas, tsupps, tansws, tds = prepare_simplified(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
+    train_dataset = SimplifiedHotpotQADataset(paras, supps, answs, ds)
+    eval_dataset = SimplifiedHotpotQADataset(tparas, tsupps, tansws, tds)
     data_collator = DataCollatorForMultipleChoice(tok, padding='longest', max_length=512)
     train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.batch_size)
     eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
-    test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
-    return train_dataloader, eval_dataloader, test_dataloader
+    return train_dataloader, eval_dataloader
 
-def run_lm(model, batch, bs, tot, train=True):
+def run_lm(model, batch, bs, train=True):
     model, linear = model
     m = nn.LogSoftmax(dim=-1)
-    input_ids = batch["input_ids"].view(bs*tot, -1)
-    attention_mask = batch["attention_mask"].view(bs*tot, -1)
-    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+    sigmoid = nn.Sigmoid()
+    outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
     pooled_output = outputs[1]
     if train:
         dropout = nn.Dropout(model.config.hidden_dropout_prob)
         pooled_output = dropout(pooled_output)
-    logits = linear(pooled_output)
-    reshaped_logits = logits.view(-1, tot)
+    logits = linear(pooled_output).view(-1)
+    logits = sigmoid(logits)
+    reshaped_logits = padding(batch["lengths"], logits).view(bs, -1)
+    logits = torch.logit(logits)
     return m(reshaped_logits)
 
 def pad_answers(tokenizer, contexts, raw_answers):
+    lens = [len(c) for c in contexts]
     contexts = [c for cs in contexts for c in cs]
-    contexts = [{"input_ids": x} for x in contexts]
+    contexts = [{"input_ids": c} for c in contexts]
     out = tokenizer.pad(
         contexts,
         padding='longest',
         return_tensors="pt",
     )
-    raw_answers = [{"input_ids": x} for x in raw_answers]
+    raw_answers = [[a] * l for a, l in zip(raw_answers, lens)]
+    raw_answers = [a for ans in raw_answers for a in ans]
+    raw_answers = [{"input_ids": a} for a in raw_answers]
     answers = tokenizer.pad(
         raw_answers,
         padding='longest',
         return_tensors="pt",
         return_attention_mask=False,
     )['input_ids']
-    n = len(contexts) // len(raw_answers)
-    answers = answers.repeat(1, n)
-    answers = answers.view(answers.shape[0]*n, -1) 
 
     return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
 
@@ -121,26 +125,21 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
 
 def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, train=True):
     for key in batch:
-        if key != "contexts" and key != "answers":
+        if key != "contexts" and key != "answers" and key != "ds":
             batch[key] = batch[key].to(device)
     bs = len(batch["answers"])
-    tot = len(batch['input_ids'][0])
-    num_choices = len(batch['contexts'][0])
-    pouts = run_lm(layers, batch, bs, tot, train=train)
+    pouts = run_lm(layers, batch, bs, train=train)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'])
+    in_len = len(answer_in)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
     if train:
-        loss = answ_out.loss.view(bs, num_choices, -1)
+        loss = answ_out.loss.view(in_len, -1)
         loss = (-loss).sum(dim=-1)
+        loss = padding(batch["lengths"], loss).view(bs, -1)
         loss += pouts
-        if reg_coeff > 0:
-            normalized = torch.exp(loss)
         loss = torch.logsumexp(loss, dim=-1)
         loss = -loss.mean()
-        if reg_coeff > 0:
-            entropy = torch.mean(-torch.sum(normalized * torch.log(normalized + 1e-9), dim = 1), dim = 0)
-            loss += reg_coeff * entropy
     else:
         loss = 0.
     return answ_out, pouts, loss
@@ -157,22 +156,28 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         answ_results = []
     for step, eval_batch in enumerate(dataloader):
         bs = len(eval_batch["answers"])
-        num_choices = len(eval_batch['contexts'][0])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
         eval_outs, para_preds, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False, beam=args.beam)
+        lens = Counter(eval_batch["lengths"].cpu().tolist())
+        lens = [lens[i] for i in sorted(lens.keys())]
+        lens.insert(0, 0)
+        for i in range(1, len(lens)):
+            lens[i] += lens[i-1]
         eval_outs, scores = eval_outs
-        eval_outs = eval_outs.view(bs, num_choices, -1)
-        scores = scores.view(bs, num_choices, -1)
-        scores = -scores
-        mask = scores!=0
-        scores = (scores*mask).sum(dim=-1)/mask.sum(dim=-1)
-        scores = scores + para_preds
-        idxes = scores.argmax(dim=-1).view(-1, 1)
-        pos_eval_outs = eval_outs[torch.arange(len(eval_outs))[:,None], idxes]
-        pos_eval_outs = pos_eval_outs.view(bs, -1)
-        preds = tok.batch_decode(pos_eval_outs, skip_special_tokens=True)
+        scores = scores.view(eval_outs.shape[0], -1)
+        eval_outs = [eval_outs[lens[i]:lens[i+1], :] for i in range(len(lens)-1)]
+        scores = [-scores[lens[i]:lens[i+1], :] for i in range(len(lens)-1)]
+        preds = []
+        for i in range(len(scores)):
+            mask = scores[i] !=0
+            scores[i] = (scores[i]*mask).sum(dim=-1)/mask.sum(dim=-1)
+            scores[i] = scores[i] + para_preds[i][:len(scores[i])]
+            j = scores[i].argmax(dim=-1).item()
+            curr_out = eval_outs[i][j]
+            pred = tok.decode(curr_out, skip_special_tokens=True)
+            preds.append(pred)
         gold = [normalize_answer(s) for s in gold]
         preds = [normalize_answer(s) for s in preds]
         if args.save_results and split == "Valid":
@@ -181,36 +186,51 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             predictions=preds,
             references=gold,
         )
-        top2 = torch.topk(scores, 2)[0][:, -1].view(-1, 1)
-        para_tmp = scores.clone().detach()
-        para_tmp[para_tmp>=top2] = 1
-        para_tmp[para_tmp!=1] = 0
-        para_tmp = para_tmp.int().cpu().tolist()
+        para_tmp = []
+        for s, d in zip(scores, eval_batch["ds"]):
+            pred = torch.topk(s, 2, dim=-1).indices.cpu().tolist()
+            curr = [0] * 10
+            curr_idx = 1
+            x, y = d[pred[0]], d[pred[curr_idx]]
+            while x == y:
+                pred = torch.topk(s, curr_idx+2, dim=-1).indices.cpu().tolist()
+                curr_idx += 1
+                x, y = d[pred[0]], d[pred[curr_idx]]
+            curr[x] = 1
+            curr[y] = 1
+            para_tmp.append(curr)
         labels = [1] * 2 + [0] * 8
         labels = [labels for _ in range(len(para_tmp))]
         metric.add_batch(
             predictions=para_tmp,
             references=labels,
         )
-        normal_scores = torch.exp(scores)
-        pos_entropy = -torch.sum(normal_scores * torch.log(normal_scores + 1e-9), dim = 1)
-        pos_ents += pos_entropy.cpu().tolist()
         predictions = para_preds.argmax(dim=-1)
-        top2 = torch.topk(para_preds, 2)[0][:, -1].view(-1, 1)
-        para_tmp = para_preds.clone().detach()
-        para_tmp[para_tmp>=top2] = 1
-        para_tmp[para_tmp!=1] = 0
-        para_tmp = para_tmp.int().cpu().tolist()
+        para_tmp = []
+        for pred, d in zip(para_preds, eval_batch["ds"]):
+            curr = [0] * 10
+            topk = torch.topk(pred, 2, dim=-1).indices.cpu().tolist()
+            curr_idx = 1
+            x, y = d[topk[0]], d[topk[curr_idx]]
+            while x == y:
+                topk = torch.topk(pred, curr_idx+2, dim=-1).indices.cpu().tolist()
+                curr_idx += 1
+                x, y = d[topk[0]], d[topk[curr_idx]]
+            curr[x] = 1
+            curr[y] = 1
+            para_tmp.append(curr)
         prior_metric.add_batch(
             predictions=para_tmp,
             references=labels,
         )
+        idxes = predictions.cpu().tolist()
         if args.save_results and split == "Valid":
-            para_results += predictions.cpu().tolist()
-        idxes = predictions.view(-1, 1)
-        prior_eval_outs = eval_outs[torch.arange(len(eval_outs))[:,None], idxes]
-        prior_eval_outs = prior_eval_outs.view(bs, -1)
-        preds = tok.batch_decode(prior_eval_outs, skip_special_tokens=True)
+            para_results += idxes
+        preds = []
+        for i in range(len(idxes)):
+            curr_out = eval_outs[i][idxes[i]]
+            pred = tok.decode(curr_out, skip_special_tokens=True)
+            preds.append(pred)
         preds = [normalize_answer(s) for s in preds]
         prior_exact_match.add_batch(
             predictions=preds,
@@ -227,7 +247,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         wandb.log({
             "step": steps,
             f"{split} Prior Entropy": sum(prior_ents) / len(prior_ents),
-            f"{split} Posterior Entropy": sum(pos_ents) / len(pos_ents),
             f"{split} Prior Para": prior_para_acc,
             f"{split} Prior Acc": prior_eval_metric,
             f"{split} Posterior Para": pos_para_acc,
@@ -242,7 +261,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     answer_tokenizer = AutoTokenizer.from_pretrained(args.answer_model_dir)
     data = load_hotpotqa()
-    train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
+    train_dataloader, eval_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
     run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} reg-{args.reg_coeff}'
@@ -261,7 +280,7 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup_simplified_independent_baseline',
+               project='hotpotqa_unsup_simplified_independent_partition',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])
@@ -278,8 +297,6 @@ def main():
                 with torch.no_grad():
                     valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
                                              tokenizer, answer_tokenizer, eval_dataloader, "Valid")
-                    evaluate(completed_steps, args, all_layers, answer_model,
-                                 tokenizer, answer_tokenizer, test_dataloader, "Test")
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
