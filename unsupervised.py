@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import dataclass
 from itertools import chain
 from typing import Optional, Union
@@ -17,18 +18,10 @@ from torch.optim import AdamW
 from torch import nn
 import wandb
 from utils import get_args, load_hotpotqa, mean_pooling, padding, normalize_answer
-from utils import prepare_linear, prepare_mlp, prepare_optim_and_scheduler
+from utils import prepare_linear, prepare_optim_and_scheduler, padding
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
-
-label2ij = []
-cnt = 0
-for i in range(10):
-    for j in range(i+1, 10):
-        label2ij.append([i, j])
-        cnt += 1
-label2ij = torch.tensor(label2ij).to(device)
 
 @dataclass
 class DataCollatorForMultipleChoice:
@@ -40,14 +33,10 @@ class DataCollatorForMultipleChoice:
     def __call__(self, features):
         batch_size = len(features)
         num_choices = len(features[0]["paras"])
-        plabel_name = "para_labels"
-        plabels = [feature.pop(plabel_name) for feature in features]
-        slabel_name = "sent_labels"
-        slabels = [feature.pop(slabel_name) for feature in features]
-        max_slabel = max([len(l) for l in slabels])
-        slabels = [slabels[i] + [0] * (max_slabel - len(slabels[i])) for i in range(len(slabels))]
         paras = [feature.pop("paras") for feature in features]
-        paras = list(chain(*paras))
+        lengths = [[i] * len(paras[i]) for i in range(len(paras))]
+        lengths = [l for ls in lengths for l in ls]
+        paras = [p for ps in paras for p in ps]
         paras = [{"input_ids": x} for x in paras]
 
         batch = self.tokenizer.pad(
@@ -57,176 +46,64 @@ class DataCollatorForMultipleChoice:
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors="pt",
         )
-        # Un-flatten
-        batch = {k: v.view(batch_size, num_choices, -1) for k, v in batch.items()}
 
         answer_name = "answs"
         raw_answers = [feature.pop(answer_name) for feature in features]
         context_name = "supps"
         contexts = [feature.pop(context_name) for feature in features]
+        ds_name = "ds"
+        ds = [feature.pop(ds_name) for feature in features]
 
         # Add back labels
         batch['contexts'] = contexts
         batch['answers'] = raw_answers
-        batch["plabels"] = torch.tensor(plabels, dtype=torch.int64)
-        batch["slabels"] = torch.tensor(slabels, dtype=torch.float)
+        batch['lengths'] = torch.tensor(lengths, dtype=torch.int64)
+        batch['ds'] = ds
         return batch
 
 def prepare_model(args):
     model = AutoModel.from_pretrained(args.model_dir)
     model = model.to(device)
     linear = prepare_linear(model.config.hidden_size)
-    mlp = prepare_mlp(model.config.hidden_size*3)
-    sent_linear = prepare_linear(model.config.hidden_size)
-    return [model, linear, mlp, sent_linear]
+    return [model, linear]
 
 def prepare_dataloader(data, tok, answer_tok, args):
-    data = prepare_pipeline(tok, answer_tok, data, max_sent=args.max_paragraph_length)
-    train_dataset = UnsupHotpotQADataset(data["train"])
-    eval_dataset = UnsupHotpotQADataset(data["valid"])
-    test_dataset = UnsupHotpotQADataset(data["test"])
+    paras, supps, answs, ds = prepare_pipeline(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
+    tparas, tsupps, tansws, tds = prepare_pipeline(tok, answer_tok, "validation", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
+    train_dataset = UnsupHotpotQADataset(paras, supps, answs, ds)
+    eval_dataset = UnsupHotpotQADataset(tparas, tsupps, tansws, tds)
     data_collator = DataCollatorForMultipleChoice(tok, padding='longest', max_length=512)
     train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.batch_size)
     eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
-    test_dataloader = DataLoader(test_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
-    return train_dataloader, eval_dataloader, test_dataloader
+    return train_dataloader, eval_dataloader
 
-def run_lm(model, batch, bs, num_choices, train):
-    input_ids = batch["input_ids"].view(bs*num_choices, -1)
-    attention_mask = batch["attention_mask"].view(bs*num_choices, -1)
+def run_lm(model, batch, bs, train=True):
+    model, linear = model
+    m = nn.LogSoftmax(dim=-1)
+    sigmoid = nn.Sigmoid()
+    outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+    pooled_output = outputs[1]
     if train:
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    else:
-        with torch.no_grad():
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    return outputs, attention_mask
+        dropout = nn.Dropout(model.config.hidden_dropout_prob)
+        pooled_output = dropout(pooled_output)
+    logits = linear(pooled_output).view(-1)
+    logits = sigmoid(logits)
+    reshaped_logits = padding(batch["lengths"], logits).view(bs, -1)
+    reshaped_logits = torch.logit(reshaped_logits)
+    return m(reshaped_logits)
 
-def run_para_model(layers, outputs, attention_mask, bs, num_choices, train):
-    linear, mlp = layers
-    m = nn.Softmax(dim=-1)
-    sentence_embeddings = mean_pooling(outputs, attention_mask)
-    sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
-    sentence_embeddings = sentence_embeddings.view(bs, num_choices, -1)
-    if train:
-        single_outs = linear(sentence_embeddings).view(bs, -1)
-    else:
-        with torch.no_grad():
-            single_outs = linear(sentence_embeddings).view(bs, -1)
-    single_outs = m(single_outs)
-    combs = torch.combinations(torch.arange(num_choices))
-    C = len(combs)
-    paired = sentence_embeddings[:,combs,:]
-    diff = torch.abs(paired[:,:,0] - paired[:,:,1])
-    pairs = torch.cat([paired.view(bs,C,-1), diff], dim=-1).view(-1, 3*sentence_embeddings.shape[-1])
-    if train:
-        outs = mlp(pairs).view(bs, -1)
-    else:
-        with torch.no_grad():
-            outs = mlp(pairs).view(bs, -1)
-    outs = m(outs)
-    res = []
-    st, ed = 0, 9
-    for i in range(9):
-        res.append(single_outs[:, i].view(bs, -1) * outs[:, st:ed])
-        st = ed
-        ed += (9-i-1)
-    res = torch.cat(res, dim=1)
-    return outs
-
-def process_para_outs(pouts, lm_outputs, raw_input_ids, bs, num_choices, max_p):
-    para_preds = pouts.argmax(dim=-1)
-    ijs = torch.stack([label2ij[x] for x in para_preds])
-    _, seq_len, emb_len = lm_outputs[0].shape
-    ids = torch.arange(bs)[:, None]
-    sent_in = lm_outputs[0].view(bs, num_choices, seq_len, emb_len)
-    if max_p:
-        sent_in = sent_in[ids, ijs]
-        input_ids = raw_input_ids[ids, ijs]
-        input_ids = input_ids.view(bs*2, seq_len)
-        sent_in = sent_in.view(bs*2, seq_len, -1)
-    else:
-        input_ids = raw_input_ids.view(bs*10, seq_len)
-        sent_in = sent_in.view(bs*10, seq_len, -1)
-    return input_ids, sent_in, ijs
-
-def run_sent_model(linear, tok, input_ids, embs, train):
-    indices = (input_ids == tok.unk_token_id).nonzero(as_tuple=False)
-    outs = embs[indices[:, 0], indices[:, 1]]
-    if train:
-        outs = linear(outs)
-    else:
-        with torch.no_grad():
-            outs = linear(outs)
-    outs = torch.sigmoid(outs).view(-1)
-    x = indices[:, 0]
-    L = len(x)
-    rows = torch.nn.functional.one_hot(x)
-    cols = rows.cumsum(0)[torch.arange(L), x] - 1
-    cols = torch.nn.functional.one_hot(cols)
-    outs = (outs[:, None, None] *
-             cols[:, None, :] *
-             rows[:, :, None]).sum(0)
-    return outs
-
-def process_sent_outs(souts, max_p, marker=999, threshold=0.5):
-    if souts.shape[1] < 3:
-        pad = torch.zeros(souts.shape[0], 3-souts.shape[1]).to(device)
-        souts = torch.concat([souts, pad], dim=1)
-    values, sent_preds = torch.topk(souts, 3, dim=-1)
-    indices = (values[:, 1:] <= threshold).nonzero().tolist()
-    first = values[:, 0].view(-1, 1)
-    second = torch.where(values[:, 1:] <= threshold, torch.tensor(1.).to(device), values[:, 1:])
-    values = torch.cat([first, second], dim=1)
-    values = values.prod(dim=-1)
-    sent_preds = sent_preds.tolist()
-    ls = []
-    for i in range(len(sent_preds)):
-        curr = [j for ii, j in enumerate(sent_preds[i]) if [i, ii-1] not in indices]
-        ls.append(curr)
-    if max_p:
-        ls = [ls[i:i+2] for i in range(0, len(ls), 2)]
-    else:
-        ls = [ls[i:i+10] for i in range(0, len(ls), 10)]
-    return values, ls
-
-def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, max_p, max_len):
-    out = []
-    if max_p:
-        for c, pidx, sidx in zip(contexts, para_indices, sent_indices):
-            q, supp = c
-            c1, c2 = [], []
-            for j in sidx[0]:
-                c1 += supp[pidx[0]][j]
-            for j in sidx[1]:
-                c2 += supp[pidx[1]][j]
-            out.append(q+c1+c2)
-    else:
-        for i, c in enumerate(contexts):
-            q, supp = c
-            for pair in label2ij:
-                c1, c2 = [], []
-                p1, p2 = pair
-                for j in sent_indices[i][p1]:
-                    c1 += supp[p1][j]
-                for j in sent_indices[i][p2]:
-                    c2 += supp[p2][j]
-                out.append(q+c1+c2)
-    out = [{"input_ids": x} for x in out]
+def pad_answers(tokenizer, contexts, raw_answers):
+    lens = [len(c) for c in contexts]
+    contexts = [c for cs in contexts for c in cs]
+    contexts = [{"input_ids": c} for c in contexts]
     out = tokenizer.pad(
-        out,
+        contexts,
         padding='longest',
         return_tensors="pt",
     )
-    # to avoid oom on a6000
-    if max_len > 512 and len(out["input_ids"]) > 10:
-        max_len = 512
-    out["input_ids"] = out["input_ids"][:, :max_len]
-    out["attention_mask"] = out["attention_mask"][:, :max_len]
-
-    if not max_p:
-        raw_answers = [[x] * len(label2ij) for x in raw_answers]
-        raw_answers = [x for sub in raw_answers for x in sub]
-    raw_answers = [{"input_ids": x} for x in raw_answers]
+    raw_answers = [[a] * l for a, l in zip(raw_answers, lens)]
+    raw_answers = [a for ans in raw_answers for a in ans]
+    raw_answers = [{"input_ids": a} for a in raw_answers]
     answers = tokenizer.pad(
         raw_answers,
         padding='longest',
@@ -236,87 +113,147 @@ def get_relevant(tokenizer, contexts, raw_answers, para_indices, sent_indices, m
 
     return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
 
-def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
+def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train):
     answs[answs==model.config.pad_token_id] = -100
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
-        with torch.no_grad():
-            outputs = model.generate(input_ids, num_beams=2, min_length=1, max_length=20)
+        outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
+        scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
+        outputs = (outputs, scores)
     return outputs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, train=True):
     for key in batch:
-        if key != "contexts" and key != "answers":
+        if key != "contexts" and key != "answers" and key != "ds":
             batch[key] = batch[key].to(device)
-    bs = len(batch['plabels'])
-    num_choices = len(batch['input_ids'][0])
-    lm_outputs, attention_mask = run_lm(layers[0], batch, bs, num_choices, train=train)
-    pouts = run_para_model(layers[1:3], lm_outputs, attention_mask, bs, num_choices, train=train)
-    entropy = torch.mean(-torch.sum(pouts * torch.log(pouts + 1e-9), dim = 1), dim = 0)
-    input_ids, sent_in, para_ids = process_para_outs(
-        pouts, lm_outputs, batch['input_ids'], bs, num_choices, max_p=max_p)
-    sent_out = run_sent_model(layers[-1], tokenizer, input_ids, sent_in, train=train)
-    sent_values, sent_idx = process_sent_outs(sent_out, max_p=max_p, threshold=t)
-    answer_in, answer_attn, labels = get_relevant(
-            answer_tokenizer, batch["contexts"], batch['answers'],
-            para_ids.tolist(), sent_idx, max_p=max_p, max_len=answer_model.config.max_position_embeddings)
-    answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
-    if max_p:
-        if train:
-            loss = answ_out.loss.view(bs, -1).mean(-1)
-            pout_max = torch.max(pouts, dim=-1)[0]
-            loss *= pout_max
-            sent_max = sent_values.view(bs, -1).mean(-1)
-            loss *= sent_max
-            loss = loss.mean()
-        else:
-            loss = 0.
+    bs = len(batch["answers"])
+    pouts = run_lm(layers, batch, bs, train=train)
+    answer_in, answer_attn, labels = pad_answers(
+            answer_tokenizer, batch["contexts"], batch['answers'])
+    in_len = len(answer_in)
+    answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
+    if train:
+        loss = answ_out.loss.view(in_len, -1)
+        loss = (-loss).sum(dim=-1)
+        loss = padding(batch["lengths"], loss).view(bs, -1)
+        loss += pouts
+        loss = torch.logsumexp(loss, dim=-1)
+        loss = -loss.mean()
     else:
-        combs = torch.combinations(torch.arange(num_choices))
-        C = len(combs)
-        sent_values = sent_values.view(bs, -1)
-        paired = sent_values[:,combs]
-        sent_product = paired[:,:,0] * paired[:,:,1]
-        sent_product = sent_product.view(bs, C)
-        loss = answ_out.loss.reshape(bs, len(label2ij), -1).mean(dim=-1)
-        loss *= pouts
-        loss *= sent_product
-        loss = loss.mean()
-    loss += reg_coeff * entropy
-    return answ_out, para_ids, sent_idx, loss
+        loss = 0.
+    return answ_out, pouts, loss
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     exact_match = load_metric("exact_match")
-    layers[0].eval()
-    answ_model.eval()
-    results = []
-    para_acc = []
+    metric = load_metric("accuracy", "multilabel")
+    prior_exact_match = load_metric("exact_match")
+    prior_metric = load_metric("accuracy", "multilabel")
+    prior_ents = []
+    pos_ents = []
+    if args.save_results and split == "Valid":
+        para_results = []
+        answ_results = []
     for step, eval_batch in enumerate(dataloader):
+        bs = len(eval_batch["answers"])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
-        eval_outs, para_ids, sent_ids, _ = run_model(
-                eval_batch, layers, answ_model, tok, answ_tok, max_p=True, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False)
-        preds = tok.batch_decode(eval_outs, skip_special_tokens=True)
+        eval_outs, para_preds, _ = run_model(
+                eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
+                reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False, beam=args.beam)
+        lens = Counter(eval_batch["lengths"].cpu().tolist())
+        lens = [lens[i] for i in sorted(lens.keys())]
+        lens.insert(0, 0)
+        for i in range(1, len(lens)):
+            lens[i] += lens[i-1]
+        eval_outs, scores = eval_outs
+        scores = scores.view(eval_outs.shape[0], -1)
+        eval_outs = [eval_outs[lens[i]:lens[i+1], :] for i in range(len(lens)-1)]
+        scores = [-scores[lens[i]:lens[i+1], :] for i in range(len(lens)-1)]
+        preds = []
+        for i in range(len(scores)):
+            mask = scores[i] !=0
+            scores[i] = (scores[i]*mask).sum(dim=-1)/mask.sum(dim=-1)
+            scores[i] = scores[i] + para_preds[i][:len(scores[i])]
+            j = scores[i].argmax(dim=-1).item()
+            curr_out = eval_outs[i][j]
+            pred = tok.decode(curr_out, skip_special_tokens=True)
+            preds.append(pred)
         gold = [normalize_answer(s) for s in gold]
         preds = [normalize_answer(s) for s in preds]
+        if args.save_results and split == "Valid":
+            answ_results.append((preds, gold))
         exact_match.add_batch(
             predictions=preds,
             references=gold,
         )
-        results.append(eval_outs)
-        gold_paras = torch.stack([label2ij[x] for x in eval_batch['plabels']])
-        para_acc.append(torch.all(gold_paras == para_ids, dim=1))
-    eval_metric = exact_match.compute()
-    para_acc = torch.cat(para_acc)
-    para_acc = para_acc.sum() / torch.numel(para_acc)
+        para_tmp = []
+        for s, d in zip(scores, eval_batch["ds"]):
+            pred = torch.topk(s, 2, dim=-1).indices.cpu().tolist()
+            curr = [0] * 10
+            curr_idx = 1
+            x, y = d[pred[0]], d[pred[curr_idx]]
+            while x == y:
+                pred = torch.topk(s, curr_idx+2, dim=-1).indices.cpu().tolist()
+                curr_idx += 1
+                x, y = d[pred[0]], d[pred[curr_idx]]
+            curr[x] = 1
+            curr[y] = 1
+            para_tmp.append(curr)
+        labels = [1] * 2 + [0] * 8
+        labels = [labels for _ in range(len(para_tmp))]
+        metric.add_batch(
+            predictions=para_tmp,
+            references=labels,
+        )
+        predictions = para_preds.argmax(dim=-1)
+        para_tmp = []
+        for pred, d in zip(para_preds, eval_batch["ds"]):
+            curr = [0] * 10
+            topk = torch.topk(pred, 2, dim=-1).indices.cpu().tolist()
+            curr_idx = 1
+            x, y = d[topk[0]], d[topk[curr_idx]]
+            while x == y:
+                topk = torch.topk(pred, curr_idx+2, dim=-1).indices.cpu().tolist()
+                curr_idx += 1
+                x, y = d[topk[0]], d[topk[curr_idx]]
+            curr[x] = 1
+            curr[y] = 1
+            para_tmp.append(curr)
+        prior_metric.add_batch(
+            predictions=para_tmp,
+            references=labels,
+        )
+        idxes = predictions.cpu().tolist()
+        if args.save_results and split == "Valid":
+            para_results += idxes
+        preds = []
+        for i in range(len(idxes)):
+            curr_out = eval_outs[i][idxes[i]]
+            pred = tok.decode(curr_out, skip_special_tokens=True)
+            preds.append(pred)
+        preds = [normalize_answer(s) for s in preds]
+        prior_exact_match.add_batch(
+            predictions=preds,
+            references=gold,
+        )
+        normal_scores = torch.exp(para_preds)
+        prior_entropy = -torch.sum(normal_scores * torch.log(normal_scores + 1e-9), dim = 1)
+        prior_ents += prior_entropy.cpu().tolist()
+    pos_eval_metric = exact_match.compute()
+    pos_para_acc = metric.compute()
+    prior_eval_metric = prior_exact_match.compute()
+    prior_para_acc = prior_metric.compute()
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Para": para_acc.item(),
-            f"{split} Acc": eval_metric})
-    if args.save_results:
-        torch.save(results, f"logging/{args.run_name}|step-{steps}.pt")
-    return eval_metric['exact_match']
+            f"{split} Prior Entropy": sum(prior_ents) / len(prior_ents),
+            f"{split} Prior Para": prior_para_acc,
+            f"{split} Prior Acc": prior_eval_metric,
+            f"{split} Posterior Para": pos_para_acc,
+            f"{split} Posterior Acc": pos_eval_metric})
+    if args.save_results and split == "Valid":
+        torch.save((para_results, answ_results), f"logging/{args.run_name}|step-{steps}.pt")
+    return pos_eval_metric['exact_match']
 
 
 def main():
@@ -324,13 +261,10 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     answer_tokenizer = AutoTokenizer.from_pretrained(args.answer_model_dir)
     data = load_hotpotqa()
-    train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
+    train_dataloader, eval_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    if args.max_p:
-        run_name=f'max_p model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length} t-{args.sentence_thrshold}'
-    else:
-        run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} reg_coeff-{args.reg_coeff} max_sent-{args.max_paragraph_length} t-{args.sentence_thrshold}'
+    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} reg-{args.reg_coeff}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
@@ -346,27 +280,30 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup',
+               project='hotpotqa_unsup_simplified_independent_partition',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])
         wandb.watch(answer_model)
 
     best_valid = float('-inf')
+    all_layers[0].train()
+    answer_model.train()
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
-            if completed_steps % args.eval_steps == 0 and completed_steps > 0:
-                valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
-                                         tokenizer, answer_tokenizer, eval_dataloader, "Valid")
-                evaluate(completed_steps, args, all_layers, answer_model,
-                             tokenizer, answer_tokenizer, test_dataloader, "Test")
+            if completed_steps % args.eval_steps == 0 and completed_steps > 0 and step % args.gradient_accumulation_steps == 0:
+                all_layers[0].eval()
+                answer_model.eval()
+                with torch.no_grad():
+                    valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
+                                             tokenizer, answer_tokenizer, eval_dataloader, "Valid")
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
                         all_layers[0].save_pretrained(f"{args.output_model_dir}/{run_name}")
                 all_layers[0].train()
                 answer_model.train()
-            answ, _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
+            _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
                     answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:

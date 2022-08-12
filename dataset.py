@@ -45,11 +45,12 @@ def len_helper(l):
         l[i] += l[i-1]
     return l
 
-def preprocess_simplified_sent_function(examples, tok, answ_tok, max_sent, fixed):
+def preprocess_pipeline_function(examples, tok, answ_tok, max_sent, fixed):
+    paragraphs = []
     supps = []
-    lengths = []
-    found = 0
-    assert tok.sep_token == answ_tok.sep_token
+    plengths = []
+    slengths = []
+    ds = []
     for context, labels, q, supp in zip(examples["context"], examples["labels"], examples["question"], examples['supporting_facts']):
         ts = context["title"]
         sents = context["sentences"]
@@ -67,32 +68,74 @@ def preprocess_simplified_sent_function(examples, tok, answ_tok, max_sent, fixed
                     print("INDEX OUT OF RANGE", sid, len(sents[y]))
                     continue
                 tmp[y].append(sid)
-        #not_supps0 = [sents[x][i] for i in range(len(sents[x])) if i not in tmp[x]]
-        #not_supps1 = [sents[y][i] for i in range(len(sents[y])) if i not in tmp[y]]
-        #gold0 = [sents[x][i] for i in tmp[x]]
-        #gold1 = [sents[y][i] for i in tmp[y]]
-        #if len(not_supps0) != 0 or len(not_supp1) != 0:
-        #    distractor0 = 0
-        if tmp[x] in [[0], [1], [0, 1]] and tmp[y] in [[0], [1], [0, 1]]:
-            found += 1
-        p1 = supp_helper(sents[x], ts[x])
-        p2 = supp_helper(sents[y], ts[y])
+        ps = []
+        idx2p = dict()
+        cnt = 0
+        for i in range(len(ts)):
+            for j in range(0, len(sents[i][:max_sent]), fixed):
+                ps.append(sents[i][j:j+fixed])
+                idx2p[cnt] = i
+                cnt += 1
+        curr_ps = [f' {tok.sep_token}'.join(p) for p in ps]
+        paragraphs += [f"{q} {tok.sep_token} {p}" for p in curr_ps]
+        plengths.append(len(ps))
+        ds.append(idx2p)
         curr_supps = []
-        for m, n in product(p1, p2):
-            curr_supps.append(m+f" {tok.sep_token} "+n)
+        for p in ps:
+            rang = range(len(p))
+            combs = list(combinations(rang, r=1)) + list(combinations(rang, r=2)) + list(combinations(rang, r=3))
+            for c in combs:
+                curr_sents = [p[i] for i in c]
+                curr_sents = ' '.join(curr_sents)
+                curr_sents = f"{q} {answ_tok.sep_token} {curr_sents}"
+                curr_supps.append(curr_sents)
         supps += curr_supps
-        lengths.append(len(curr_supps))
-    print(found / len(examples["question"]))
-    para_length = len(labels)
-    supp_length = len(list(combinations(labels, 2)))
+        slengths.append(len(curr_supps))
+    print(slengths)
+    plengths = len_helper(plengths)
+    slengths = len_helper(slengths)
     tokenized_paras = tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
-    tokenized_paras = [tokenized_paras[i:i+para_length] for i in range(0, len(tokenized_paras), para_length)]
+    tokenized_paras = [tokenized_paras[plengths[i]:plengths[i+1]] for i in range(len(plengths)-1)]
     answers = [a for a in examples['answer']]
     tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
-    tokenized_supps = [tokenized_supps[i:i+supp_length] for i in range(0, len(tokenized_supps), supp_length)]
+    tokenized_supps = [tokenized_supps[slengths[i]:slengths[i+1]] for i in range(len(slengths)-1)]
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
-    return tokenized_paras, tokenized_supps, tokenized_answers
+    return tokenized_paras, tokenized_supps, tokenized_answers, ds
+
+def prepare_pipeline(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixed=False, sentence=False, baseline=False):
+    assert fixed > 0
+    print("preparing pipeline")
+    data = data[split][:5]
+
+    remained = []
+    for title_label, titles in zip(data['supporting_facts'], data['context']):
+        title_label = title_label["title"]
+        titles = titles["title"]
+        l = []
+        for i in range(len(titles)):
+            if titles[i] in title_label:
+                l.append(i)
+        assert len(l) == 2
+        assert l[0] < l[1]
+        curr_k = len(titles) - 2
+        total = list(range(len(titles)))
+        total.remove(l[0])
+        total.remove(l[1])
+        distractor = random.sample(total, k=curr_k)
+        l += distractor
+        remained.append(l)
+    data["labels"] = remained
+    fname = f"cache/unsupervised_hotpotqa_simplified_encodings_{k}_{fixed}_{split}.pkl"
+
+    if os.path.isfile(fname):
+        with open(fname, 'rb') as f:
+            paras, supps, answers, ds = pickle.load(f)
+    else:
+        paras, supps, answers, ds = preprocess_pipeline_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
+        with open(fname, 'wb') as f:
+            pickle.dump((paras, supps, answers, ds), f)
+    return paras, supps, answers, ds
 
 def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed):
     paragraphs = []
@@ -167,18 +210,13 @@ def prepare_simplified(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fi
         l += distractor
         remained.append(l)
     data["labels"] = remained
-    if sentence:
-        fname = f"cache/partition_hotpotqa_simplified_sent_encodings_{split}.pkl"
-        proc_function = preprocess_simplified_sent_function
-    else:
-        fname = f"cache/partition_hotpotqa_simplified_encodings_{k}_{fixed}_{split}.pkl"
-        proc_function = preprocess_simplified_function
+    fname = f"cache/partition_hotpotqa_simplified_encodings_{k}_{fixed}_{split}.pkl"
 
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
             paras, supps, answers, ds = pickle.load(f)
     else:
-        paras, supps, answers, ds = proc_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
+        paras, supps, answers, ds = preprocess_simplified_function(data, tokenizer, answ_tokenizer, max_sent, fixed)
         with open(fname, 'wb') as f:
             pickle.dump((paras, supps, answers, ds), f)
     return paras, supps, answers, ds
@@ -481,31 +519,6 @@ def prepare_answers(tokenizer, split, data, max_sent, baseline=False):
         sents, answers = split_data(sents, answers)
     return sents, answers
 
-def prepare_pipeline(tokenizer, answer_tokenizer, data, max_sent, para_ind=False, sent_ind=True):
-    print("preparing HotpotQA")
-    out = dict()
-    out["train"] = dict()
-    out["valid"] = dict()
-    out["test"] = dict()
-    _, para_labels = prepare_paragraphs(tokenizer, "train", data, max_sent=max_sent, no_x=True)
-    paras, sent_labels = prepare_sentences(tokenizer, "train", data, max_sent=max_sent, unsup=True)
-    supps, answ_labels = prepare_answers(answer_tokenizer, "train", data, max_sent=max_sent)
-    assert len(paras) == len(para_labels) == len(answ_labels)
-    out["train"]["paras"] = paras[0]
-    out["valid"]["paras"] = paras[1]
-    out["train"]["para_labels"] = para_labels[0]
-    out["valid"]["para_labels"] = para_labels[1]
-    out["train"]["sent_labels"] = sent_labels[0]
-    out["valid"]["sent_labels"] = sent_labels[1]
-    out["train"]["supps"] = supps[0]
-    out["valid"]["supps"] = supps[1]
-    out["train"]["answ_labels"] = answ_labels[0]
-    out["valid"]["answ_labels"] = answ_labels[1]
-    _, out["test"]["para_labels"] = prepare_paragraphs(tokenizer, "validation", data, max_sent=max_sent, no_x=True)
-    out["test"]["paras"], out["test"]["sent_labels"] = prepare_sentences(tokenizer, "validation", data, max_sent=max_sent, unsup=True)
-    out["test"]["supps"], out["test"]["answ_labels"] = prepare_answers(answer_tokenizer, "validation", data, max_sent=max_sent)
-    return out
-
 class HotpotQADataset(torch.utils.data.Dataset):
     def __init__(self, paras, labels):
         self.paras, self.labels = paras, labels
@@ -538,20 +551,19 @@ class SimplifiedHotpotQADataset(torch.utils.data.Dataset):
         return len(self.answs)
 
 class UnsupHotpotQADataset(torch.utils.data.Dataset):
-    def __init__(self, data):
-        self.paras = data["paras"]
-        self.plabels = data["para_labels"]
-        self.slabels = data["sent_labels"]
-        self.supps = data["supps"]
-        self.answs = data["answ_labels"]
+    def __init__(self, paras, supps, answs, ds):
+        self.paras = paras
+        self.supps = supps
+        self.answs = answs
+        self.ds = ds
 
     def __getitem__(self, idx):
         item = dict()
+        item = dict()
         item["paras"] = self.paras[idx]
-        item["para_labels"] = self.plabels[idx]
-        item["sent_labels"] = self.slabels[idx]
         item["supps"] = self.supps[idx]
         item["answs"] = self.answs[idx]
+        item["ds"] = self.ds[idx]
         return item
 
     def __len__(self):
