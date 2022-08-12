@@ -80,7 +80,6 @@ def prepare_dataloader(data, tok, answer_tok, args):
 def run_lm(model, batch, bs, train=True):
     model, linear = model
     m = nn.LogSoftmax(dim=-1)
-    sigmoid = nn.Sigmoid()
     outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
     pooled_output = outputs[1]
     if train:

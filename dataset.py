@@ -162,9 +162,9 @@ def preprocess_simplified_function(examples, tok, answ_tok, max_sent, fixed):
         ps = []
         idx2p = dict()
         cnt = 0
-        for i in range(len(ts)):
-            for j in range(0, len(sents[i][:max_sent]), fixed):
-                ps.append(sents[i][j:j+fixed])
+        for i in range(len(labels)):
+            for j in range(0, len(sents[labels[i]][:max_sent]), fixed):
+                ps.append(sents[labels[i]][j:j+fixed])
                 idx2p[cnt] = i
                 cnt += 1
         plengths.append(len(ps))
