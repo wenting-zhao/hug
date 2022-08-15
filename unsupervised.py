@@ -80,17 +80,16 @@ def prepare_dataloader(data, tok, answer_tok, args):
 def run_lm(model, batch, bs, train=True):
     model, linear = model
     m = nn.LogSoftmax(dim=-1)
-    sigmoid = nn.Sigmoid()
     outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
     pooled_output = outputs[1]
     if train:
         dropout = nn.Dropout(model.config.hidden_dropout_prob)
         pooled_output = dropout(pooled_output)
     logits = linear(pooled_output).view(-1)
-    logits = sigmoid(logits)
-    reshaped_logits = padding(batch["lengths"], logits).view(bs, -1)
-    reshaped_logits = torch.logit(reshaped_logits)
-    return m(reshaped_logits)
+    if train:
+        return m(logits)
+    else:
+        return logits
 
 def pad_answers(tokenizer, contexts, raw_answers):
     lens = [len(c) for c in contexts]
@@ -119,7 +118,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
         outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
-        scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
+        scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=outputs).loss
         outputs = (outputs, scores)
     return outputs
 
@@ -136,7 +135,6 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     if train:
         loss = answ_out.loss.view(in_len, -1)
         loss = (-loss).sum(dim=-1)
-        loss = padding(batch["lengths"], loss).view(bs, -1)
         loss += pouts
         loss = torch.logsumexp(loss, dim=-1)
         loss = -loss.mean()
@@ -145,6 +143,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     return answ_out, pouts, loss
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
+    m = nn.LogSoftmax(dim=-1)
     exact_match = load_metric("exact_match")
     metric = load_metric("accuracy", "multilabel")
     prior_exact_match = load_metric("exact_match")
@@ -167,13 +166,16 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             lens[i] += lens[i-1]
         eval_outs, scores = eval_outs
         scores = scores.view(eval_outs.shape[0], -1)
+        para_preds = [para_preds[lens[i]:lens[i+1]] for i in range(len(lens)-1)]
+        for i in range(len(para_preds)):
+            para_preds[i] = m(para_preds[i])
         eval_outs = [eval_outs[lens[i]:lens[i+1], :] for i in range(len(lens)-1)]
         scores = [-scores[lens[i]:lens[i+1], :] for i in range(len(lens)-1)]
         preds = []
         for i in range(len(scores)):
             mask = scores[i] !=0
             scores[i] = (scores[i]*mask).sum(dim=-1)/mask.sum(dim=-1)
-            scores[i] = scores[i] + para_preds[i][:len(scores[i])]
+            scores[i] = scores[i] + para_preds[i]
             j = scores[i].argmax(dim=-1).item()
             curr_out = eval_outs[i][j]
             pred = tok.decode(curr_out, skip_special_tokens=True)
@@ -205,7 +207,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             predictions=para_tmp,
             references=labels,
         )
-        predictions = para_preds.argmax(dim=-1)
+        idxes = [pred.argmax(dim=-1).item() for pred in para_preds]
         para_tmp = []
         for pred, d in zip(para_preds, eval_batch["ds"]):
             curr = [0] * 10
@@ -223,7 +225,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             predictions=para_tmp,
             references=labels,
         )
-        idxes = predictions.cpu().tolist()
         if args.save_results and split == "Valid":
             para_results += idxes
         preds = []
@@ -236,9 +237,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             predictions=preds,
             references=gold,
         )
-        normal_scores = torch.exp(para_preds)
-        prior_entropy = -torch.sum(normal_scores * torch.log(normal_scores + 1e-9), dim = 1)
-        prior_ents += prior_entropy.cpu().tolist()
     pos_eval_metric = exact_match.compute()
     pos_para_acc = metric.compute()
     prior_eval_metric = prior_exact_match.compute()
@@ -246,7 +244,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Prior Entropy": sum(prior_ents) / len(prior_ents),
             f"{split} Prior Para": prior_para_acc,
             f"{split} Prior Acc": prior_eval_metric,
             f"{split} Posterior Para": pos_para_acc,

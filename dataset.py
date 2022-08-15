@@ -71,19 +71,19 @@ def preprocess_pipeline_function(examples, tok, answ_tok, max_sent, fixed):
         ps = []
         idx2p = dict()
         cnt = 0
-        for i in range(len(ts)):
-            for j in range(0, len(sents[i][:max_sent]), fixed):
-                ps.append(sents[i][j:j+fixed])
+        for i in range(len(labels)):
+            for j in range(0, len(sents[labels[i]][:max_sent]), fixed):
+                ps.append(sents[labels[i]][j:j+fixed])
                 idx2p[cnt] = i
                 cnt += 1
-        curr_ps = [f' {tok.sep_token}'.join(p) for p in ps]
-        paragraphs += [f"{q} {tok.sep_token} {p}" for p in curr_ps]
+        curr_ps = [f' {tok.unk_token}'.join(p) for p in ps]
+        paragraphs += [f"{q} {tok.unk_token} {p}" for p in curr_ps]
         plengths.append(len(ps))
         ds.append(idx2p)
         curr_supps = []
         for p in ps:
             rang = range(len(p))
-            combs = list(combinations(rang, r=1)) + list(combinations(rang, r=2)) + list(combinations(rang, r=3))
+            combs = list(combinations(rang, r=1)) + list(combinations(rang, r=2))
             for c in combs:
                 curr_sents = [p[i] for i in c]
                 curr_sents = ' '.join(curr_sents)
