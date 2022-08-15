@@ -34,8 +34,7 @@ class DataCollatorForMultipleChoice:
         batch_size = len(features)
         num_choices = len(features[0]["paras"])
         paras = [feature.pop("paras") for feature in features]
-        lengths = [[i] * len(paras[i]) for i in range(len(paras))]
-        lengths = [l for ls in lengths for l in ls]
+        lengths = [len(paras[i]) for i in range(len(paras))]
         paras = [p for ps in paras for p in ps]
         paras = [{"input_ids": x} for x in paras]
 
@@ -53,12 +52,15 @@ class DataCollatorForMultipleChoice:
         contexts = [feature.pop(context_name) for feature in features]
         ds_name = "ds"
         ds = [feature.pop(ds_name) for feature in features]
+        idx_name = "idxes"
+        idx = [feature.pop(idx_name) for feature in features]
 
         # Add back labels
         batch['contexts'] = contexts
         batch['answers'] = raw_answers
-        batch['lengths'] = torch.tensor(lengths, dtype=torch.int64)
+        batch['lengths'] = lengths
         batch['ds'] = ds
+        batch['idx'] = idx
         return batch
 
 def prepare_model(args):
@@ -124,7 +126,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
 
 def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, train=True):
     for key in batch:
-        if key != "contexts" and key != "answers" and key != "ds":
+        if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
     bs = len(batch["answers"])
     pouts = run_lm(layers, batch, bs, train=train)
@@ -159,8 +161,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         eval_outs, para_preds, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False, beam=args.beam)
-        lens = Counter(eval_batch["lengths"].cpu().tolist())
-        lens = [lens[i] for i in sorted(lens.keys())]
+        lens = eval_batch["lengths"]
         lens.insert(0, 0)
         for i in range(1, len(lens)):
             lens[i] += lens[i-1]
