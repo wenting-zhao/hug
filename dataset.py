@@ -125,7 +125,7 @@ def preprocess_pipeline_function(examples, tok, answ_tok, max_sent, fixed):
 def prepare_pipeline(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixed=False, sentence=False, baseline=False):
     assert fixed > 0
     print("preparing pipeline")
-    data = data[split][:1000]
+    data = data[split][:]
 
     labels = []
     for title_label, titles in zip(data['supporting_facts'], data['context']):
@@ -139,9 +139,9 @@ def prepare_pipeline(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixe
         assert l[0] < l[1]
         labels.append(l)
     data["labels"] = labels
-    fname = f"cache/unsupervised_hotpotqa_simplified_encodings_{k}_{fixed}_{split}.pkl"
+    fname = f"cache/unsupervised_hotpotqa_encodings_{k}_{fixed}_{split}.pkl"
 
-    if False:#os.path.isfile(fname):
+    if os.path.isfile(fname):
         with open(fname, 'rb') as f:
             paras, supps, answers, ds = pickle.load(f)
     else:
