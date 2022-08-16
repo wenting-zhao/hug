@@ -353,7 +353,7 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup_simplified_independent_partition',
+               project='hotpotqa_unsup_independent',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])
