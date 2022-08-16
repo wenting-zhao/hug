@@ -50,13 +50,19 @@ def preprocess_pipeline_function(examples, tok, answ_tok, max_sent, fixed):
     supps = []
     plengths = []
     slengths = []
+    nums = []
     ds = []
+    ds2 = []
+    num_sents = []
+    sent_labels = []
+    sent_labels2 = []
     for context, labels, q, supp in zip(examples["context"], examples["labels"], examples["question"], examples['supporting_facts']):
         ts = context["title"]
         sents = context["sentences"]
         # correct paragrpah indices
-        x, y = labels[:2]
+        x, y = labels
         tmp = defaultdict(list)
+        tmp2 = dict()
         for t, sid in zip(supp["title"], supp["sent_id"]):
             if t == ts[x]:
                 if sid >= len(sents[x]):
@@ -68,47 +74,60 @@ def preprocess_pipeline_function(examples, tok, answ_tok, max_sent, fixed):
                     print("INDEX OUT OF RANGE", sid, len(sents[y]))
                     continue
                 tmp[y].append(sid)
+        sent_labels.append(tmp)
         ps = []
         idx2p = dict()
+        p2idx = defaultdict(list)
         cnt = 0
-        for i in range(len(labels)):
-            for j in range(0, len(sents[labels[i]][:max_sent]), fixed):
-                ps.append(sents[labels[i]][j:j+fixed])
+        curr_sents = []
+        for i in range(len(ts)):
+            curr_sents.append(len(sents[i][:max_sent]))
+            for j in range(0, len(sents[i][:max_sent]), fixed):
+                ps.append(sents[i][j:j+fixed])
                 idx2p[cnt] = i
+                p2idx[i].append(cnt)
                 cnt += 1
+        num_sents.append(sum(curr_sents))
         curr_ps = [f' {tok.unk_token}'.join(p) for p in ps]
         paragraphs += [f"{q} {tok.unk_token} {p}" for p in curr_ps]
         plengths.append(len(ps))
         ds.append(idx2p)
+        ds2.append(p2idx)
         curr_supps = []
-        for p in ps:
-            rang = range(len(p))
+        for i in range(len(ts)):
+            rang = range(len(sents[i][:max_sent]))
             combs = list(combinations(rang, r=1)) + list(combinations(rang, r=2))
+            if i in labels:
+                tmp2[i] = combs
+            curr_idxes = []
             for c in combs:
-                curr_sents = [p[i] for i in c]
+                curr_sents = [sents[i][j] for j in c]
                 curr_sents = ' '.join(curr_sents)
                 curr_sents = f"{q} {answ_tok.sep_token} {curr_sents}"
                 curr_supps.append(curr_sents)
+            slengths.append(len(combs))
         supps += curr_supps
-        slengths.append(len(curr_supps))
-    print(slengths)
+        nums.append(len(ts))
+        sent_labels2.append(tmp2)
     plengths = len_helper(plengths)
     slengths = len_helper(slengths)
+    nums = len_helper(nums)
     tokenized_paras = tok(paragraphs, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_paras = [tokenized_paras[plengths[i]:plengths[i+1]] for i in range(len(plengths)-1)]
     answers = [a for a in examples['answer']]
     tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_supps = [tokenized_supps[slengths[i]:slengths[i+1]] for i in range(len(slengths)-1)]
+    tokenized_supps = [tokenized_supps[nums[i]:nums[i+1]] for i in range(len(nums)-1)]
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_paras)
-    return tokenized_paras, tokenized_supps, tokenized_answers, ds
+    return tokenized_paras, tokenized_supps, tokenized_answers, (ds, ds2, num_sents, sent_labels, sent_labels2)
 
 def prepare_pipeline(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixed=False, sentence=False, baseline=False):
     assert fixed > 0
     print("preparing pipeline")
-    data = data[split][:5]
+    data = data[split][:1000]
 
-    remained = []
+    labels = []
     for title_label, titles in zip(data['supporting_facts'], data['context']):
         title_label = title_label["title"]
         titles = titles["title"]
@@ -118,17 +137,11 @@ def prepare_pipeline(tokenizer, answ_tokenizer, split, data, max_sent, k=1, fixe
                 l.append(i)
         assert len(l) == 2
         assert l[0] < l[1]
-        curr_k = len(titles) - 2
-        total = list(range(len(titles)))
-        total.remove(l[0])
-        total.remove(l[1])
-        distractor = random.sample(total, k=curr_k)
-        l += distractor
-        remained.append(l)
-    data["labels"] = remained
+        labels.append(l)
+    data["labels"] = labels
     fname = f"cache/unsupervised_hotpotqa_simplified_encodings_{k}_{fixed}_{split}.pkl"
 
-    if os.path.isfile(fname):
+    if False:#os.path.isfile(fname):
         with open(fname, 'rb') as f:
             paras, supps, answers, ds = pickle.load(f)
     else:
@@ -555,7 +568,7 @@ class UnsupHotpotQADataset(torch.utils.data.Dataset):
         self.paras = paras
         self.supps = supps
         self.answs = answs
-        self.ds = ds
+        self.ds, self.ds2, self.num_sents, self.slabel, self.slabels2 = ds
 
     def __getitem__(self, idx):
         item = dict()
@@ -564,7 +577,11 @@ class UnsupHotpotQADataset(torch.utils.data.Dataset):
         item["supps"] = self.supps[idx]
         item["answs"] = self.answs[idx]
         item["ds"] = self.ds[idx]
+        item["ds2"] = self.ds2[idx]
+        item["num_s"] = self.num_sents[idx]
+        item["s_labels"] = self.slabel[idx]
+        item["s_maps"] = self.slabels2[idx]
         return item
 
     def __len__(self):
-        return len(self.plabels)
+        return len(self.answs)

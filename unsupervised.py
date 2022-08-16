@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import defaultdict
 from dataclasses import dataclass
 from itertools import chain
 from typing import Optional, Union
@@ -32,7 +32,6 @@ class DataCollatorForMultipleChoice:
 
     def __call__(self, features):
         batch_size = len(features)
-        num_choices = len(features[0]["paras"])
         paras = [feature.pop("paras") for feature in features]
         lengths = [len(paras[i]) for i in range(len(paras))]
         paras = [p for ps in paras for p in ps]
@@ -52,22 +51,32 @@ class DataCollatorForMultipleChoice:
         contexts = [feature.pop(context_name) for feature in features]
         ds_name = "ds"
         ds = [feature.pop(ds_name) for feature in features]
-        idx_name = "idxes"
-        idx = [feature.pop(idx_name) for feature in features]
+        ds_name2 = "ds2"
+        ds2 = [feature.pop(ds_name2) for feature in features]
+        sent_name = "num_s"
+        num_s = [feature.pop(sent_name) for feature in features]
+        slabel_name = "s_labels"
+        slabels = [feature.pop(slabel_name) for feature in features]
+        smap_name = "s_maps"
+        smaps = [feature.pop(smap_name) for feature in features]
 
         # Add back labels
         batch['contexts'] = contexts
         batch['answers'] = raw_answers
         batch['lengths'] = lengths
         batch['ds'] = ds
-        batch['idx'] = idx
+        batch['ds2'] = ds2
+        batch['num_s'] = num_s
+        batch['s_maps'] = smaps
+        batch['s_labels'] = slabels
         return batch
 
 def prepare_model(args):
     model = AutoModel.from_pretrained(args.model_dir)
     model = model.to(device)
-    linear = prepare_linear(model.config.hidden_size)
-    return [model, linear]
+    linear1 = prepare_linear(model.config.hidden_size)
+    linear2 = prepare_linear(model.config.hidden_size)
+    return [model, linear1, linear2]
 
 def prepare_dataloader(data, tok, answer_tok, args):
     paras, supps, answs, ds = prepare_pipeline(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
@@ -79,26 +88,90 @@ def prepare_dataloader(data, tok, answer_tok, args):
     eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
     return train_dataloader, eval_dataloader
 
-def run_lm(model, batch, bs, train=True):
-    model, linear = model
-    m = nn.LogSoftmax(dim=-1)
+def run_lm(model, batch, train):
     outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+    return outputs
+
+def run_para_model(linear, outputs, dropout_p, ds, ds2, train):
     pooled_output = outputs[1]
+    m = nn.LogSoftmax(dim=-1)
     if train:
-        dropout = nn.Dropout(model.config.hidden_dropout_prob)
+        dropout = nn.Dropout(dropout_p)
         pooled_output = dropout(pooled_output)
     logits = linear(pooled_output).view(-1)
-    if train:
-        return m(logits)
-    else:
-        return logits
+    start, end = 0, 0
+    all_normalized = []
+    for i in range(len(ds)):
+        d = ds[i]
+        d2 = ds2[i]
+        end += len(d)
+        normalized = m(logits[start:end])
+        t = []
+        for i in d2:
+            l = d2[i]
+            new_t = torch.logsumexp(normalized[l[0]:l[-1]+1], dim=-1)
+            t.append(new_t)
+        normalized = torch.stack(t)
+        all_normalized.append(normalized)
+        start = end
+    return all_normalized
 
-def pad_answers(tokenizer, contexts, raw_answers):
-    lens = [len(c) for c in contexts]
-    contexts = [c for cs in contexts for c in cs]
-    contexts = [{"input_ids": c} for c in contexts]
+def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s, train):
+    m = nn.LogSoftmax(dim=-1)
+    indices = (input_ids == tok.unk_token_id).nonzero(as_tuple=False)
+    lm_outs = lm_outputs[0][indices[:, 0], indices[:, 1]]
+    groups = []
+    start, end = 0, 0
+    for d, n in zip(ds, num_s):
+        end += n
+        p_len = max(list(d.values())) + 1
+        curr_indices = indices[start:end]
+        curr_lm_outs = lm_outs[start:end]
+        group_by_p = [[] for _ in range(p_len)]
+        l = curr_indices[:, 0] - curr_indices[:, 0][0]
+        l = l.cpu().tolist()
+        for i, elm in enumerate(l):
+            group_by_p[d[elm]].append(curr_lm_outs[i])
+        for i in range(len(group_by_p)):
+            group_by_p[i] = torch.stack(group_by_p[i])
+            combs = torch.combinations(torch.arange(group_by_p[i].shape[0]))
+            C = len(combs)
+            paired = group_by_p[i][combs,:]
+            added = torch.sum(paired, dim=1)
+            group_by_p[i] = torch.cat([group_by_p[i], added], dim=0)
+            group_by_p[i] = linear(group_by_p[i]).view(-1)
+            group_by_p[i] = m(group_by_p[i])
+        groups.append(group_by_p)
+        start = end
+    return groups
+
+def get_topk(paras, sents, kp, ks):
+    all_ps_vals, all_top_pouts, all_top_souts = [], [], []
+    for p, s in zip(paras, sents):
+        top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else [p, torch.arange(len(p))]
+        top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else [sent, torch.arange(len(sent))] for sent in s]
+        top_svals = [i[0] for i in top_souts]
+        top_souts = [i[1] for i in top_souts]
+        ps_vals = [val + top_svals[idx] for idx, val in zip(top_pouts, top_pvals)]
+        ps_vals = torch.cat(ps_vals, dim=0)
+        all_ps_vals.append(ps_vals)
+        all_top_pouts.append(top_pouts)
+        all_top_souts.append(top_souts)
+    return all_ps_vals, all_top_pouts, all_top_souts
+
+def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
+    lens = []
+    out_cs = []
+    for cont, cur_tokp, cur_topks in zip(contexts, topkp, topks):
+        l = 0
+        for elm in cur_tokp:
+            curr = [cont[elm][j] for j in cur_topks[elm]]
+            out_cs += curr
+            l += len(curr)
+        lens.append(l)
+    out_cs = [{"input_ids": c} for c in out_cs]
     out = tokenizer.pad(
-        contexts,
+        out_cs,
         padding='longest',
         return_tensors="pt",
     )
@@ -111,7 +184,6 @@ def pad_answers(tokenizer, contexts, raw_answers):
         return_tensors="pt",
         return_attention_mask=False,
     )['input_ids']
-
     return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
 
 def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train):
@@ -120,138 +192,141 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
         outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
-        scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=outputs).loss
+        scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=outputs)
         outputs = (outputs, scores)
     return outputs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, beam=2, train=True):
+def process_answ(answ, ps_out, in_len):
+    return_two = False
+    if len(answ) == 2:
+        return_two = True
+        text, answ = answ
+    answ = answ.loss.view(in_len, -1)
+    start, end = 0, 0
+    outs = []
+    text_outs = []
+    for curr in ps_out:
+        end += len(curr)
+        out = answ[start:end]
+        out = (-out).sum(dim=-1)
+        outs.append(out)
+        if return_two:
+            text_out = text[start:end]
+            text_outs.append(text_out)
+        start = end
+    if return_two:
+        return (text_outs, outs)
+    else:
+        return outs
+
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, topkp, topks, beam=2, train=True):
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
     bs = len(batch["answers"])
-    pouts = run_lm(layers, batch, bs, train=train)
+    lm_outs = run_lm(layers[0], batch, train=train)
+    pouts = run_para_model(layers[1], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
+    souts = run_sent_model(layers[2], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"], train=train)
+    para_sent, top_pouts, top_souts = get_topk(pouts, souts, topkp, topks)
     answer_in, answer_attn, labels = pad_answers(
-            answer_tokenizer, batch["contexts"], batch['answers'])
+            answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
     in_len = len(answer_in)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
+    answ_out = process_answ(answ_out, para_sent, in_len)
+    loss = 0.
     if train:
-        loss = answ_out.loss.view(in_len, -1)
-        loss = (-loss).sum(dim=-1)
-        loss += pouts
-        loss = torch.logsumexp(loss, dim=-1)
-        loss = -loss.mean()
-    else:
-        loss = 0.
-    return answ_out, pouts, loss
+        for l, ps in zip(answ_out, para_sent):
+            l += ps
+            l = torch.logsumexp(l, dim=-1)
+            loss -= l.mean()
+    loss /= bs
+    return answ_out, (para_sent, top_pouts, top_souts), loss
+
+def update_sp(preds, golds):
+    sp_em, sp_f1 = 0, 0
+    for cur_sp_pred, gold_sp_pred in zip(preds, golds):
+        tp, fp, fn = 0, 0, 0
+        for e in cur_sp_pred:
+            if e in gold_sp_pred:
+                for v in cur_sp_pred[e]:
+                    if v in gold_sp_pred[e]:
+                        tp += 1
+                    else:
+                        fp += 1
+        for e in gold_sp_pred:
+            if e not in cur_sp_pred:
+                fn += len(gold_sp_pred[e])
+            else:
+                for v in gold_sp_pred[e]:
+                    if v not in cur_sp_pred[e]:
+                        fn += len(gold_sp_pred[e])
+        prec = 1.0 * tp / (tp + fp) if tp + fp > 0 else 0.0
+        recall = 1.0 * tp / (tp + fn) if tp + fn > 0 else 0.0
+        f1 = 2 * prec * recall / (prec + recall) if prec + recall > 0 else 0.0
+        em = 1.0 if fp + fn == 0 else 0.0
+        sp_em += em
+        sp_f1 += f1
+    sp_em /= len(preds)
+    sp_f1 /= len(preds)
+    return sp_em, sp_f1
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     m = nn.LogSoftmax(dim=-1)
     exact_match = load_metric("exact_match")
-    metric = load_metric("accuracy", "multilabel")
-    prior_exact_match = load_metric("exact_match")
-    prior_metric = load_metric("accuracy", "multilabel")
-    prior_ents = []
-    pos_ents = []
-    if args.save_results and split == "Valid":
-        para_results = []
-        answ_results = []
+    para_results = []
+    gold_paras = []
+    answ_results = []
     for step, eval_batch in enumerate(dataloader):
         bs = len(eval_batch["answers"])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
-        eval_outs, para_preds, _ = run_model(
+        eval_outs, sent_preds, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
-                reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False, beam=args.beam)
-        lens = eval_batch["lengths"]
-        lens.insert(0, 0)
-        for i in range(1, len(lens)):
-            lens[i] += lens[i-1]
+                reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False,
+                topkp=args.topkp, topks=args.topks, beam=args.beam)
         eval_outs, scores = eval_outs
-        scores = scores.view(eval_outs.shape[0], -1)
-        para_preds = [para_preds[lens[i]:lens[i+1]] for i in range(len(lens)-1)]
-        for i in range(len(para_preds)):
-            para_preds[i] = m(para_preds[i])
-        eval_outs = [eval_outs[lens[i]:lens[i+1], :] for i in range(len(lens)-1)]
-        scores = [-scores[lens[i]:lens[i+1], :] for i in range(len(lens)-1)]
-        preds = []
+        para_sent, top_pouts, top_souts = sent_preds
+        ans_prior_preds = []
         for i in range(len(scores)):
-            mask = scores[i] !=0
-            scores[i] = (scores[i]*mask).sum(dim=-1)/mask.sum(dim=-1)
-            scores[i] = scores[i] + para_preds[i]
-            j = scores[i].argmax(dim=-1).item()
+            scores[i] = scores[i] + para_sent[i]
+            j = para_sent[i].argmax(dim=-1).item()
             curr_out = eval_outs[i][j]
             pred = tok.decode(curr_out, skip_special_tokens=True)
-            preds.append(pred)
+            ans_prior_preds.append(pred)
         gold = [normalize_answer(s) for s in gold]
-        preds = [normalize_answer(s) for s in preds]
+        ans_prior_preds = [normalize_answer(s) for s in ans_prior_preds]
         if args.save_results and split == "Valid":
-            answ_results.append((preds, gold))
+            answ_results.append((ans_prior_preds, gold))
         exact_match.add_batch(
-            predictions=preds,
+            predictions=ans_prior_preds,
             references=gold,
         )
-        para_tmp = []
-        for s, d in zip(scores, eval_batch["ds"]):
-            pred = torch.topk(s, 2, dim=-1).indices.cpu().tolist()
-            curr = [0] * 10
-            curr_idx = 1
-            x, y = d[pred[0]], d[pred[curr_idx]]
-            while x == y:
-                pred = torch.topk(s, curr_idx+2, dim=-1).indices.cpu().tolist()
-                curr_idx += 1
-                x, y = d[pred[0]], d[pred[curr_idx]]
-            curr[x] = 1
-            curr[y] = 1
-            para_tmp.append(curr)
-        labels = [1] * 2 + [0] * 8
-        labels = [labels for _ in range(len(para_tmp))]
-        metric.add_batch(
-            predictions=para_tmp,
-            references=labels,
-        )
-        idxes = [pred.argmax(dim=-1).item() for pred in para_preds]
-        para_tmp = []
-        for pred, d in zip(para_preds, eval_batch["ds"]):
-            curr = [0] * 10
-            topk = torch.topk(pred, 2, dim=-1).indices.cpu().tolist()
-            curr_idx = 1
-            x, y = d[topk[0]], d[topk[curr_idx]]
-            while x == y:
-                topk = torch.topk(pred, curr_idx+2, dim=-1).indices.cpu().tolist()
-                curr_idx += 1
-                x, y = d[topk[0]], d[topk[curr_idx]]
-            curr[x] = 1
-            curr[y] = 1
-            para_tmp.append(curr)
-        prior_metric.add_batch(
-            predictions=para_tmp,
-            references=labels,
-        )
-        if args.save_results and split == "Valid":
-            para_results += idxes
-        preds = []
-        for i in range(len(idxes)):
-            curr_out = eval_outs[i][idxes[i]]
-            pred = tok.decode(curr_out, skip_special_tokens=True)
-            preds.append(pred)
-        preds = [normalize_answer(s) for s in preds]
-        prior_exact_match.add_batch(
-            predictions=preds,
-            references=gold,
-        )
-    pos_eval_metric = exact_match.compute()
-    pos_para_acc = metric.compute()
-    prior_eval_metric = prior_exact_match.compute()
-    prior_para_acc = prior_metric.compute()
+        prior_sent_preds = [dict() for _ in scores]
+        for i in range(len(scores)):
+            x, y = top_pouts[i][:2].cpu().tolist()
+            if x not in eval_batch['s_maps'][i]:
+                prior_sent_preds[i][x] = None
+            else:
+                s0 = eval_batch['s_maps'][i][x][top_souts[i][x][0].item()]
+                prior_sent_preds[i][x] = s0
+            if y not in eval_batch['s_maps'][i]:
+                prior_sent_preds[i][y] = None
+            else:
+                s1 = eval_batch['s_maps'][i][y][top_souts[i][y][0].item()]
+                prior_sent_preds[i][y] = s1
+        para_results += prior_sent_preds
+        gold_paras += eval_batch['s_labels']
+    eval_metric = exact_match.compute()
+    supp_em, supp_f1 = update_sp(para_results, gold_paras)
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Prior Para": prior_para_acc,
-            f"{split} Prior Acc": prior_eval_metric,
-            f"{split} Posterior Para": pos_para_acc,
-            f"{split} Posterior Acc": pos_eval_metric})
+            f"{split} Supp F1": supp_f1,
+            f"{split} Supp EM": supp_em,
+            f"{split} Answ EM": eval_metric,
+        })
     if args.save_results and split == "Valid":
         torch.save((para_results, answ_results), f"logging/{args.run_name}|step-{steps}.pt")
-    return pos_eval_metric['exact_match']
+    return eval_metric['exact_match']
 
 
 def main():
@@ -262,7 +337,7 @@ def main():
     train_dataloader, eval_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} reg-{args.reg_coeff}'
+    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
@@ -302,7 +377,8 @@ def main():
                 all_layers[0].train()
                 answer_model.train()
             _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
-                    answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p)
+                    answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p,
+                    topkp=args.topkp, topks=args.topks)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
