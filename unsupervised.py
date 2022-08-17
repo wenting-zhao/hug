@@ -325,7 +325,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             f"{split} Answ EM": eval_metric,
         })
     if args.save_results and split == "Valid":
-        torch.save((para_results, answ_results), f"logging/{args.run_name}|step-{steps}.pt")
+        torch.save((para_results, gold_paras, answ_results), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
     return eval_metric['exact_match']
 
 
