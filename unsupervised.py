@@ -7,6 +7,7 @@ from tqdm import tqdm
 import wandb
 from dataset import prepare_pipeline, UnsupHotpotQADataset
 from datasets import load_metric
+import numpy as np
 from transformers import AutoModel, AutoModelForSeq2SeqLM
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from transformers import get_scheduler, set_seed
@@ -145,13 +146,36 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s, train):
         start = end
     return groups
 
-def get_topk(paras, sents, kp, ks):
+def get_selected(paras, sents, kp, ks, mode):
     all_ps_vals, all_top_pouts, all_top_souts = [], [], []
     for p, s in zip(paras, sents):
-        top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else [p, torch.arange(len(p))]
-        top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else [sent, torch.arange(len(sent))] for sent in s]
-        top_svals = [i[0] for i in top_souts]
-        top_souts = [i[1] for i in top_souts]
+        if mode == "topk":
+            top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else [p, torch.arange(len(p))]
+            top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else [sent, torch.arange(len(sent))] for sent in s]
+            top_svals = [i[0] for i in top_souts]
+            top_souts = [i[1] for i in top_souts]
+        elif mode == "sample":
+            top_pouts = torch.from_numpy(np.random.choice(range(len(p)), kp, replace=False)) if len(p) > kp else torch.arange(len(p))
+            top_pvals = p[top_pouts]
+            top_souts = [torch.from_numpy(np.random.choice(range(len(sent)), ks, replace=False)) if len(sent) > ks else torch.arange(len(sent)) for sent in s]
+            top_svals = [s[i][top_souts[i]] for i in range(len(s))]
+        elif mode == "topk_sample":
+            top_p = torch.topk(p, k=1).indices.item()
+            top_s = [torch.topk(sent, k=1).indices.item() for sent in s]
+            plist = list(range(len(p)))
+            plist.remove(top_p)
+            slist = [list(range(len(sent))) for sent in s]
+            [sl.remove(curr_top_s) for sl, curr_top_s in zip(slist, top_s)]
+            rand_pouts = np.random.choice(plist, kp, replace=False) if len(plist) > kp else np.array(plist, dtype=np.long)
+            rand_souts = [np.random.choice(sl, ks, replace=False) if len(sl) > ks else np.array(sl, dtype=np.long) for sl in slist]
+            rand_pouts = np.append(rand_pouts, top_p)
+            rand_souts = [np.append(sl, ts) for sl, ts in zip(rand_souts, top_s)]
+            top_pouts = torch.from_numpy(rand_pouts)
+            top_souts = [torch.from_numpy(sl) for sl in rand_souts]
+            top_pvals = p[top_pouts]
+            top_svals = [s[i][top_souts[i]] for i in range(len(s))]
+        else:
+            raise NotImplementedError
         ps_vals = [val + top_svals[idx] for idx, val in zip(top_pouts, top_pvals)]
         ps_vals = torch.cat(ps_vals, dim=0)
         all_ps_vals.append(ps_vals)
@@ -219,7 +243,7 @@ def process_answ(answ, ps_out, in_len):
     else:
         return outs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, topkp, topks, beam=2, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, mode, topkp, topks, beam=2, train=True):
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
@@ -227,7 +251,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     lm_outs = run_lm(layers[0], batch, train=train)
     pouts = run_para_model(layers[1], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
     souts = run_sent_model(layers[2], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"], train=train)
-    para_sent, top_pouts, top_souts = get_topk(pouts, souts, topkp, topks)
+    para_sent, top_pouts, top_souts = get_selected(pouts, souts, topkp, topks, mode=mode)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
     in_len = len(answer_in)
@@ -282,7 +306,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         eval_outs, sent_preds, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False,
-                topkp=args.topkp, topks=args.topks, beam=args.beam)
+                mode="topk", topkp=args.topkp, topks=args.topks, beam=args.beam)
         eval_outs, scores = eval_outs
         para_sent, top_pouts, top_souts = sent_preds
         ans_prior_preds = []
@@ -378,7 +402,7 @@ def main():
                 answer_model.train()
             _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
                     answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p,
-                    topkp=args.topkp, topks=args.topks)
+                    mode=args.mode, topkp=args.topkp, topks=args.topks)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
