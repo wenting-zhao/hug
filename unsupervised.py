@@ -166,8 +166,8 @@ def get_selected(paras, sents, kp, ks, mode):
             plist.remove(top_p)
             slist = [list(range(len(sent))) for sent in s]
             [sl.remove(curr_top_s) for sl, curr_top_s in zip(slist, top_s)]
-            rand_pouts = np.random.choice(plist, kp, replace=False) if len(plist) > kp else np.array(plist, dtype=np.long)
-            rand_souts = [np.random.choice(sl, ks, replace=False) if len(sl) > ks else np.array(sl, dtype=np.long) for sl in slist]
+            rand_pouts = np.random.choice(plist, kp, replace=False) if len(plist) > kp else np.array(plist, dtype=np.compat.long)
+            rand_souts = [np.random.choice(sl, ks, replace=False) if len(sl) > ks else np.array(sl, dtype=np.compat.long) for sl in slist]
             rand_pouts = np.append(rand_pouts, top_p)
             rand_souts = [np.append(sl, ts) for sl, ts in zip(rand_souts, top_s)]
             top_pouts = torch.from_numpy(rand_pouts)
