@@ -361,7 +361,7 @@ def main():
     train_dataloader, eval_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks}'
+    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks} mode-{args.mode}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
