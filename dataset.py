@@ -514,24 +514,6 @@ def preprocess_answer_function(examples, tokenizer, max_sent):
     final = [(x, y) for x, y in zip(tokenized_questions, tokenized_sents)]
     return final, tokenized_answers
 
-def prepare_answers(tokenizer, split, data, max_sent, baseline=False):
-    print("preparing answers")
-    data = data[split]
-
-    if split == "train":
-        if os.path.isfile(f"cache/hotpotqa_answer_encodings.pkl"):
-            with open(f"cache/hotpotqa_answer_encodings.pkl", 'rb') as f:
-                sents, answers = pickle.load(f)
-        else:
-            sents, answers = preprocess_answer_function(data, tokenizer, max_sent)
-            with open(f"cache/hotpotqa_answer_encodings.pkl", 'wb') as f:
-                pickle.dump((sents, answers), f)
-    else:
-        sents, answers = preprocess_answer_function(data, tokenizer, max_sent)
-    if split == "train": 
-        sents, answers = split_data(sents, answers)
-    return sents, answers
-
 class HotpotQADataset(torch.utils.data.Dataset):
     def __init__(self, paras, labels):
         self.paras, self.labels = paras, labels
