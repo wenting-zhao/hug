@@ -99,7 +99,6 @@ def preprocess_pipeline_function(examples, tok, answ_tok, max_sent, fixed):
             combs = list(combinations(rang, r=1)) + list(combinations(rang, r=2))
             if i in labels:
                 tmp2[i] = combs
-            curr_idxes = []
             for c in combs:
                 curr_sents = [sents[i][j] for j in c]
                 curr_sents = ' '.join(curr_sents)
