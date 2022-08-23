@@ -309,8 +309,8 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     loss = 0.
     if train:
         for l, ps in zip(answ_out, para_sent):
-            l += ps
-            l = torch.logsumexp(l, dim=-1)
+            l *= torch.exp(ps)
+            l = torch.sum(l, dim=-1)
             loss -= l.mean()
     loss /= bs
     return answ_out, (para_sent, top_pouts, top_souts), loss
