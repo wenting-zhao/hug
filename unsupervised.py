@@ -232,7 +232,7 @@ def process_answ(answ, ps_out, in_len):
     for curr in ps_out:
         end += len(curr)
         out = answ[start:end]
-        out = (-out).sum(dim=-1)
+        out = (out).sum(dim=-1)
         outs.append(out)
         if return_two:
             text_out = text[start:end]
