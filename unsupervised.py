@@ -1,10 +1,8 @@
 from collections import defaultdict
 from dataclasses import dataclass
-from itertools import chain
 from typing import Optional, Union
 import math
 from tqdm import tqdm
-import wandb
 from dataset import prepare_pipeline, UnsupHotpotQADataset
 from datasets import load_metric
 import numpy as np
@@ -117,7 +115,7 @@ def run_para_model(linear, outputs, dropout_p, ds, ds2, train):
         start = end
     return all_normalized
 
-def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s, train):
+def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
     m = nn.LogSoftmax(dim=-1)
     indices = (input_ids == tok.unk_token_id).nonzero(as_tuple=False)
     lm_outs = lm_outputs[0][indices[:, 0], indices[:, 1]]
