@@ -91,7 +91,6 @@ def forward(model, input_ids, attn_mask, labels, train, beam=2):
             output = -output.view(bs, -1).sum(dim=-1)
             outputs.append(output)
         outputs = torch.cat(outputs, dim=0)
-        print(outputs.shape)
     else:
         outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
     return outputs
