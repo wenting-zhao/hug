@@ -261,11 +261,14 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
     answ_out = process_answ(answ_out, para_sent, in_len)
     loss = 0.
-    if train:
-        for l, ps in zip(answ_out, para_sent):
-            l += ps
-            l = torch.logsumexp(l, dim=-1)
-            loss -= l.mean()
+    if not train:
+        this = answ_out[-1]
+    else:
+        this = answ_out
+    for l, ps in zip(this, para_sent):
+        l += ps
+        l = torch.logsumexp(l, dim=-1)
+        loss -= l.mean()
     loss /= bs
     return answ_out, (para_sent, top_pouts, top_souts), loss
 
