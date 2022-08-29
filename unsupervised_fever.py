@@ -212,20 +212,20 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
     gold_answ = []
     for step, eval_batch in enumerate(dataloader):
         eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, train=False)
-        predictions = []
-        for eval_out in eval_outs:
-            pred = eval_out.sum(dim=0).argmax(dim=-1)
-            predictions.append(pred.item())
-        metric.add_batch(
-            predictions=predictions,
-            references=eval_batch["labels"],
-        )
         sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
             sent_pred = sent_out.argmax(dim=-1).item()
             flattened = [sm for sms in s_map for sm in sms]
             sent_pred = flattened[sent_pred]
             sent_preds.append(sent_pred)
+        predictions = []
+        for eval_out, sent_pred in zip(eval_outs, sent_preds):
+            pred = eval_out[sent_pred].argmax(dim=-1)
+            predictions.append(pred.item())
+        metric.add_batch(
+            predictions=predictions,
+            references=eval_batch["labels"],
+        )
         sent_results += sent_preds
         gold_sents += eval_batch['sent_labels']
         answ_results += predictions
