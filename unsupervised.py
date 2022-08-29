@@ -248,7 +248,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     bs = len(batch["answers"])
     lm_outs = run_lm(layers[0], batch, train=train)
     pouts = run_para_model(layers[1], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
-    souts = run_sent_model(layers[2], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"], train=train)
+    souts = run_sent_model(layers[2], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
     para_sent, top_pouts, top_souts = get_selected(pouts, souts, topkp, topks, mode=mode)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
