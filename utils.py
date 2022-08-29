@@ -1,4 +1,6 @@
 import argparse
+from collections import defaultdict
+from glob import glob
 import string
 import re
 from datasets import load_dataset
@@ -50,6 +52,7 @@ def get_args():
     parser.add_argument('--truncate_paragraph', '-tp', default=0, type=int)
     parser.add_argument('--reg_coeff', default=0, type=float)
     parser.add_argument('--k_distractor', default=1, type=int)
+    parser.add_argument('--max_e_len', default=3, type=int)
     parser.add_argument('--beam', default=2, type=int)
     parser.add_argument('--topkp', default=5, type=int)
     parser.add_argument('--topks', default=5, type=int)
@@ -160,3 +163,13 @@ def normalize_answer(s):
         return text.lower()
 
     return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+def collect_fever_docs(doc_path="data/fever/docs/*"):
+    flist = glob(doc_path)
+    title2sents = defaultdict(list)
+    for fname in flist:
+        with open(fname, 'r') as f:
+            for line in f:
+                key = fname.split('/')[-1]
+                title2sents[key].append(line.strip())
+    return title2sents
