@@ -1,4 +1,5 @@
 from collections import defaultdict, Counter
+from copy import deepcopy
 from glob import glob
 from itertools import combinations, product
 import json
@@ -46,6 +47,92 @@ def len_helper(l):
     for i in range(1, len(l)):
         l[i] += l[i-1]
     return l
+
+def preprocess_zxy_function(examples, tok, max_sent, max_e):
+    sent_labels = []
+    z = []
+    zx = []
+    num_sents = []
+    ds = []
+    for context, labels, q, supp in zip(examples["context"], examples["labels"], examples["question"], examples['supporting_facts']):
+        ts = context["title"]
+        sents = context["sentences"]
+        # correct paragrpah indices
+        x, y = labels
+        tmp = defaultdict(list)
+        for t, sid in zip(supp["title"], supp["sent_id"]):
+            if t == ts[x]:
+                if sid >= len(sents[x]):
+                    print("INDEX OUT OF RANGE", sid, len(sents[x]))
+                    continue
+                tmp[x].append(sid)
+            else:
+                if sid >= len(sents[y]):
+                    print("INDEX OUT OF RANGE", sid, len(sents[y]))
+                    continue
+                tmp[y].append(sid)
+        sent_labels.append(tmp)
+        cnt = 0
+        d = dict()
+        for k in range(len(ts)):
+            z_len = len(sents[k][:max_sent])
+            rang = list(range(z_len))
+            for i in range(1, min(max_e+1, z_len+1)):
+                for j in range(z_len-i+1):
+                    curr_idx = rang[j:j+i]
+                    curr_supps = [sents[k][m] for m in curr_idx]
+                    curr_supps = ' '.join(curr_supps)
+                    curr_supps = curr_supps
+                    z.append(curr_supps)
+                    curr_supps = curr_supps + f' {tok.sep_token} ' + q
+                    zx.append(curr_supps)
+                    d[cnt] = (k, curr_idx)
+                    cnt += 1
+        num_sents.append(len(d))
+        ds.append(d)
+    lengths = deepcopy(num_sents)
+    lengths = len_helper(lengths)
+    tokenized_z = tok(z, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_z = [tokenized_z[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
+    x = [[q] * n for q, n in zip(examples['question'], num_sents)]
+    x = [i for ii in x for i in ii]
+    tokenized_x = tok(x, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_x = [tokenized_x[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
+    tokenized_zx = tok(zx, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_zx = [tokenized_zx[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
+    y = [[a] * n for a, n in zip(examples['answer'], num_sents)]
+    y = [i for ii in y for i in ii]
+    tokenized_y = tok(y, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_y = [tokenized_y[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
+    assert len(tokenized_z) == len(tokenized_x)
+    return tokenized_z, tokenized_x, tokenized_zx, tokenized_y, sent_labels, examples['answer'], num_sents, ds
+
+def prepare_zxy(tokenizer, split, data, max_sent, max_e):
+    print("preparing pipeline")
+    data = data[split][:]
+
+    labels = []
+    for title_label, titles in zip(data['supporting_facts'], data['context']):
+        title_label = title_label["title"]
+        titles = titles["title"]
+        l = []
+        for i in range(len(titles)):
+            if titles[i] in title_label:
+                l.append(i)
+        assert len(l) == 2
+        assert l[0] < l[1]
+        labels.append(l)
+    data["labels"] = labels
+    fname = f"cache/unsupervised_zxy_hotpotqa_encodings_{split}.pkl"
+
+    if os.path.isfile(fname):
+        with open(fname, 'rb') as f:
+            z, x, zx, y, sent_labels, answers, num_sents, ds = pickle.load(f)
+    else:
+        z, x, zx, y, sent_labels, answers, num_sents, ds = preprocess_zxy_function(data, tokenizer, max_sent, max_e)
+        with open(fname, 'wb') as f:
+            pickle.dump((z, x, zx, y, sent_labels, answers, num_sents, ds), f)
+    return z, x, zx, y, sent_labels, answers, num_sents, ds
 
 def preprocess_pipeline_function(examples, tok, answ_tok, max_sent, fixed):
     paragraphs = []
@@ -658,6 +745,25 @@ class FeverDataset(torch.utils.data.Dataset):
         item['num_s'] = self.num_s[idx]
         item['sent_labels'] = self.sent_labels[idx]
         item['labels'] = self.labels[idx]
+        return item
+
+    def __len__(self):
+        return len(self.sent_labels)
+
+class UnsupHotpotQAZXYDataset(torch.utils.data.Dataset):
+    def __init__(self, everything):
+        self.z, self.x, self.zx, self.y, self.sent_labels, self.answers, self.num_s, self.ds = everything
+
+    def __getitem__(self, idx):
+        item = dict()
+        item['z'] = self.z[idx]
+        item['x'] = self.x[idx]
+        item['zx'] = self.zx[idx]
+        item['y'] = self.y[idx]
+        item['sent_labels'] = self.sent_labels[idx]
+        item['num_s'] = self.num_s[idx]
+        item['answers'] = self.answers[idx]
+        item['ds'] = self.ds[idx]
         return item
 
     def __len__(self):
