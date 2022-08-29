@@ -144,10 +144,15 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
         start = end
     return groups
 
-def get_selected(paras, sents, kp, ks, mode):
+def get_selected(paras, sents, kp, ks, mode, train):
     all_ps_vals, all_top_pouts, all_top_souts = [], [], []
     for p, s in zip(paras, sents):
-        if mode == "topk":
+        if not train:
+            top_pvals = p
+            top_svals = s
+            top_pouts = torch.arange(len(p))
+            top_souts = [torch.arange(len(sent)) for sent in s]
+        elif mode == "topk":
             top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else [p, torch.arange(len(p))]
             top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else [sent, torch.arange(len(sent))] for sent in s]
             top_svals = [i[0] for i in top_souts]
@@ -249,7 +254,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     lm_outs = run_lm(layers[0], batch, train=train)
     pouts = run_para_model(layers[1], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
     souts = run_sent_model(layers[2], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
-    para_sent, top_pouts, top_souts = get_selected(pouts, souts, topkp, topks, mode=mode)
+    para_sent, top_pouts, top_souts = get_selected(pouts, souts, topkp, topks, mode=mode, train=train)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
     in_len = len(answer_in)
@@ -298,7 +303,10 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     para_results = []
     gold_paras = []
     answ_results = []
+    likelihoods = []
     for step, eval_batch in enumerate(dataloader):
+        if len(para_results) > 100:
+            continue
         bs = len(eval_batch["answers"])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
         eval_outs, sent_preds, _ = run_model(
@@ -306,6 +314,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False,
                 mode="topk", topkp=args.topkp, topks=args.topks, beam=args.beam)
         eval_outs, scores = eval_outs
+        likelihoods += [s.mean().item() for s in scores]
         para_sent, top_pouts, top_souts = sent_preds
         ans_prior_preds = []
         for i in range(len(scores)):
@@ -342,6 +351,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     if not args.nolog:
         wandb.log({
             "step": steps,
+            f"{split} Likelihood": sum(likelihoods)/len(likelihoods),
             f"{split} Supp F1": supp_f1,
             f"{split} Supp EM": supp_em,
             f"{split} Answ EM": eval_metric,
@@ -375,7 +385,7 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup_independent',
+               project='hotpotqa_unsup_likelihood',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])
