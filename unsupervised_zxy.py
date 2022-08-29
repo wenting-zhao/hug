@@ -83,9 +83,15 @@ def prepare_dataloader(data, tok, args):
 def forward(model, input_ids, attn_mask, labels, train, beam=2):
     if train:
         labels[labels==model.config.pad_token_id] = -100
-        bs = len(input_ids)
-        outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=labels).loss
-        outputs = -outputs.view(bs, -1).sum(dim=-1)
+        outputs = []
+        tot_len = len(input_ids)
+        for i in range(0, tot_len, 100):
+            bs = len(input_ids[i:i+100])
+            output = model(input_ids=input_ids[i:i+100], attention_mask=attn_mask[i:i+100], labels=labels[i:i+100]).loss
+            output = -output.view(bs, -1).sum(dim=-1)
+            outputs.append(output)
+        outputs = torch.cat(outputs, dim=0)
+        print(outputs.shape)
     else:
         outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
     return outputs
