@@ -352,9 +352,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         wandb.log({
             "step": steps,
             f"{split} Likelihood": sum(likelihoods)/len(likelihoods),
-            f"{split} Supp F1": supp_f1,
-            f"{split} Supp EM": supp_em,
-            f"{split} Answ EM": eval_metric,
         })
     if args.save_results and split == "Valid":
         torch.save((para_results, gold_paras, answ_results), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
