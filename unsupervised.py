@@ -309,12 +309,12 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             continue
         bs = len(eval_batch["answers"])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
-        eval_outs, sent_preds, _ = run_model(
+        eval_outs, sent_preds, loss = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False,
                 mode="topk", topkp=args.topkp, topks=args.topks, beam=args.beam)
         eval_outs, scores = eval_outs
-        likelihoods += [s.mean().item() for s in scores]
+        likelihoods.append(loss)
         para_sent, top_pouts, top_souts = sent_preds
         ans_prior_preds = []
         for i in range(len(scores)):
