@@ -157,7 +157,7 @@ def evaluate(steps, args, zx_model, zxy_model, tok, dataloader, split):
         p_zx, p_zxy, _ = run_model(eval_batch, zx_model, zxy_model, beam=args.beam, train=False)
         sent_preds = []
         for one, m in zip(p_zx, eval_batch["ds"]):
-            _, indices = torch.sort(one)
+            _, indices = torch.sort(one, descending=True)
             indices = indices.cpu().tolist()
             top2 = indices[:2]
             idx = 1
