@@ -58,11 +58,12 @@ class DataCollatorForMultipleChoice:
 
         # Add back labels
         batch = dict()
-        batch['z'] = z['input_ids']
-        batch['z_attn'] = z['attention_mask']
+        # limit to 256 so we don't get OOM
+        batch['z'] = z['input_ids'][:, :256]
+        batch['z_attn'] = z['attention_mask'][:, :256]
         batch['x'] = x['input_ids']
-        batch['zx'] = zx['input_ids']
-        batch['zx_attn'] = zx['attention_mask']
+        batch['zx'] = zx['input_ids'][:, :256]
+        batch['zx_attn'] = zx['attention_mask'][:, :256]
         batch['y'] = y['input_ids']
         batch['ds'] = ds
         batch['num_s'] = num_s
@@ -82,15 +83,10 @@ def prepare_dataloader(data, tok, args):
 
 def forward(model, input_ids, attn_mask, labels, train, beam=2):
     if train:
+        bs = len(input_ids)
         labels[labels==model.config.pad_token_id] = -100
-        outputs = []
-        tot_len = len(input_ids)
-        for i in range(0, tot_len, 100):
-            bs = len(input_ids[i:i+100])
-            output = model(input_ids=input_ids[i:i+100], attention_mask=attn_mask[i:i+100], labels=labels[i:i+100]).loss
-            output = -output.view(bs, -1).sum(dim=-1)
-            outputs.append(output)
-        outputs = torch.cat(outputs, dim=0)
+        outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=labels).loss
+        outputs = -outputs.view(bs, -1).sum(dim=-1)
     else:
         outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
     return outputs
@@ -242,6 +238,7 @@ def main():
                         all_layers[0].save_pretrained(f"{args.output_model_dir}/{run_name}")
                 zx_model.train()
                 zxy_model.train()
+            if step < 1280: continue
             _, _, loss = run_model(batch, zx_model, zxy_model)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
