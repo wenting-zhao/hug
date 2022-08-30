@@ -58,12 +58,12 @@ class DataCollatorForMultipleChoice:
 
         # Add back labels
         batch = dict()
-        # limit to 256 so we don't get OOM
-        batch['z'] = z['input_ids'][:, :256]
-        batch['z_attn'] = z['attention_mask'][:, :256]
+        # limit to 400 so we don't get OOM
+        batch['z'] = z['input_ids'][:, :400]
+        batch['z_attn'] = z['attention_mask'][:, :400]
         batch['x'] = x['input_ids']
-        batch['zx'] = zx['input_ids'][:, :256]
-        batch['zx_attn'] = zx['attention_mask'][:, :256]
+        batch['zx'] = zx['input_ids'][:, :400]
+        batch['zx_attn'] = zx['attention_mask'][:, :400]
         batch['y'] = y['input_ids']
         batch['ds'] = ds
         batch['num_s'] = num_s
@@ -238,7 +238,6 @@ def main():
                         all_layers[0].save_pretrained(f"{args.output_model_dir}/{run_name}")
                 zx_model.train()
                 zxy_model.train()
-            if step < 1280: continue
             _, _, loss = run_model(batch, zx_model, zxy_model)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
