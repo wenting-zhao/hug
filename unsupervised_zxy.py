@@ -59,11 +59,11 @@ class DataCollatorForMultipleChoice:
         # Add back labels
         batch = dict()
         # limit to 400 so we don't get OOM
-        batch['z'] = z['input_ids'][:, :400]
-        batch['z_attn'] = z['attention_mask'][:, :400]
+        batch['z'] = z['input_ids'][:, :300]
+        batch['z_attn'] = z['attention_mask'][:, :300]
         batch['x'] = x['input_ids']
-        batch['zx'] = zx['input_ids'][:, :400]
-        batch['zx_attn'] = zx['attention_mask'][:, :400]
+        batch['zx'] = zx['input_ids'][:, :300]
+        batch['zx_attn'] = zx['attention_mask'][:, :300]
         batch['y'] = y['input_ids']
         batch['ds'] = ds
         batch['num_s'] = num_s
@@ -182,7 +182,6 @@ def evaluate(steps, args, zx_model, zxy_model, tok, dataloader, split):
         )
     eval_metric = exact_match.compute()
     supp_em, supp_f1 = update_sp(para_results, gold_paras)
-    print(eval_metric, supp_em, supp_f1)
     if not args.nolog:
         wandb.log({
             "step": steps,
