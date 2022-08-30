@@ -180,6 +180,7 @@ def evaluate(steps, args, zx_model, zxy_model, tok, dataloader, split):
             predictions=preds,
             references=gold,
         )
+        if args.save_results and split == "Valid": answ_results += preds
     eval_metric = exact_match.compute()
     supp_em, supp_f1 = update_sp(para_results, gold_paras)
     if not args.nolog:
