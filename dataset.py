@@ -82,7 +82,6 @@ def preprocess_zxy_function(examples, tok, max_sent, max_e):
                     curr_idx = rang[j:j+i]
                     curr_supps = [sents[k][m] for m in curr_idx]
                     curr_supps = ' '.join(curr_supps)
-                    curr_supps = curr_supps
                     z.append(curr_supps)
                     curr_supps = curr_supps + f' {tok.sep_token} ' + q
                     zx.append(curr_supps)

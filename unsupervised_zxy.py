@@ -163,7 +163,7 @@ def evaluate(steps, args, zx_model, zxy_model, tok, dataloader, split):
             idx = 1
             while m[top2[0]][0] == m[top2[1]][0]:
                 idx += 1
-                top2[1] = idx
+                top2[1] = indices[idx]
             i, j = top2
             sent_pred = {m[top2[0]][0]: m[top2[0]][1], m[top2[1]][0]: m[top2[1]][1]}
             sent_preds.append(sent_pred)
@@ -182,10 +182,13 @@ def evaluate(steps, args, zx_model, zxy_model, tok, dataloader, split):
         )
     eval_metric = exact_match.compute()
     supp_em, supp_f1 = update_sp(para_results, gold_paras)
+    print(eval_metric, supp_em, supp_f1)
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Likelihood": sum(likelihoods)/len(likelihoods),
+            f"{split} Supp F1": supp_f1,
+            f"{split} Supp EM": supp_em,
+            f"{split} Answ EM": eval_metric,
         })
     if args.save_results and split == "Valid":
         torch.save((para_results, gold_paras, answ_results), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
