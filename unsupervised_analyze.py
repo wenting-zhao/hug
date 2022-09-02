@@ -22,7 +22,7 @@ def update_sp(preds, golds):
             else:
                 for v in gold_sp_pred[e]:
                     if v not in cur_sp_pred[e]:
-                        fn += len(gold_sp_pred[e])
+                        fn += 1
         prec = 1.0 * tp / (tp + fp) if tp + fp > 0 else 0.0
         recall = 1.0 * tp / (tp + fn) if tp + fn > 0 else 0.0
         f1 = 2 * prec * recall / (prec + recall) if prec + recall > 0 else 0.0
@@ -113,6 +113,9 @@ def get_changes(d1, d2):
             overlap = len(overlap)
             print(f"{k1} -> {k2}: {overlap}")
 
+def get_indices(l, key):
+    return [i for i in range(len(l)) if l[i] == key]
+
 data = load_hotpotqa()["validation"]
 paragraphs = data["context"]
 paragraphs = [x["sentences"] for x in paragraphs]
@@ -136,3 +139,9 @@ get_changes({"pcac": pcac1, "pcai": pcai1, "piac": piac1, "piai": piai1},
         {"pcac": pcac2, "pcai": pcai2, "piac": piac2, "piai": piai2})
 
 print(update_sp(pred_paras2, gold_paras))
+indices = get_indices(data["type"], "bridge")
+print("bridge", len(indices))
+print(update_sp([pred_paras2[i] for i in indices], [gold_paras[i] for i in indices]))
+indices = get_indices(data["type"], "comparison")
+print("comparison", len(indices))
+print(update_sp([pred_paras2[i] for i in indices], [gold_paras[i] for i in indices]))
