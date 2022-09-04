@@ -136,6 +136,7 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
             combs = torch.combinations(torch.arange(group_by_p[i].shape[0]))
             C = len(combs)
             paired = group_by_p[i][combs,:]
+            #added = torch.mean(paired, dim=1)
             added = torch.sum(paired, dim=1)
             group_by_p[i] = torch.cat([group_by_p[i], added], dim=0)
             group_by_p[i] = linear(group_by_p[i]).view(-1)
@@ -148,8 +149,8 @@ def get_selected(paras, sents, kp, ks, mode):
     all_ps_vals, all_top_pouts, all_top_souts = [], [], []
     for p, s in zip(paras, sents):
         if mode == "topk":
-            top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else [p, torch.arange(len(p))]
-            top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else [sent, torch.arange(len(sent))] for sent in s]
+            top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else torch.topk(p, k=len(p))
+            top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else torch.topk(sent, k=len(sent)) for sent in s]
             top_svals = [i[0] for i in top_souts]
             top_souts = [i[1] for i in top_souts]
         elif mode == "sample":
