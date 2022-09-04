@@ -326,16 +326,10 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         prior_sent_preds = [dict() for _ in scores]
         for i in range(len(scores)):
             x, y = top_pouts[i][:2].cpu().tolist()
-            if x not in eval_batch['s_maps'][i]:
-                prior_sent_preds[i][x] = None
-            else:
-                s0 = eval_batch['s_maps'][i][x][top_souts[i][x][0].item()]
-                prior_sent_preds[i][x] = s0
-            if y not in eval_batch['s_maps'][i]:
-                prior_sent_preds[i][y] = None
-            else:
-                s1 = eval_batch['s_maps'][i][y][top_souts[i][y][0].item()]
-                prior_sent_preds[i][y] = s1
+            s0 = eval_batch['s_maps'][i][x][top_souts[i][x][0].item()]
+            prior_sent_preds[i][x] = s0
+            s1 = eval_batch['s_maps'][i][y][top_souts[i][y][0].item()]
+            prior_sent_preds[i][y] = s1
         para_results += prior_sent_preds
         gold_paras += eval_batch['s_labels']
     eval_metric = exact_match.compute()
