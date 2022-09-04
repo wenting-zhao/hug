@@ -276,6 +276,9 @@ def update_sp(preds, golds):
                         tp += 1
                     else:
                         fp += 1
+            else:
+                for v in cur_sp_pred[e]:
+                    fp += 1
         for e in gold_sp_pred:
             if e not in cur_sp_pred:
                 fn += len(gold_sp_pred[e])
