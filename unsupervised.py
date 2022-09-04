@@ -162,11 +162,11 @@ def get_selected(paras, sec_paras, sents, kp, ks, mode):
     all_ps_vals, all_top_pouts, all_top_sec_pouts, all_top_souts = [], [], [], []
     for p, sec_p, s in zip(paras, sec_paras, sents):
         if mode == "topk":
-            top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else [p, torch.arange(len(p))]
-            top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else [sent, torch.arange(len(sent))] for sent in s]
+            top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else torch.topk(p, k=len(p)]
+            top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else torch.topk(sent, k=len(sent)) for sent in s]
             top_svals = [i[0] for i in top_souts]
             top_souts = [i[1] for i in top_souts]
-            top_sec_pouts = [torch.topk(sp, k=kp) if len(p) > kp else [sp, torch.arange(len(sp))] for sp in sec_p]
+            top_sec_pouts = [torch.topk(sp, k=kp) if len(p) > kp else torch.topk(sp, k=len(sp)] for sp in sec_p]
             top_sec_pvals = [i[0] for i in top_sec_pouts]
             top_sec_pouts = [i[1] for i in top_sec_pouts]
         elif mode == "sample":
