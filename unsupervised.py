@@ -17,7 +17,7 @@ from torch.optim import AdamW
 from torch import nn
 import wandb
 from utils import get_args, load_hotpotqa, mean_pooling, padding, normalize_answer
-from utils import prepare_linear, prepare_optim_and_scheduler, padding
+from utils import prepare_linear, prepare_mlp, prepare_optim_and_scheduler, padding
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -75,7 +75,8 @@ def prepare_model(args):
     model = model.to(device)
     linear1 = prepare_linear(model.config.hidden_size)
     linear2 = prepare_linear(model.config.hidden_size)
-    return [model, linear1, linear2]
+    mlp = prepare_mlp(model.config.hidden_size*3)
+    return [model, linear1, mlp, linear2]
 
 def prepare_dataloader(data, tok, answer_tok, args):
     paras, supps, answs, ds = prepare_pipeline(tok, answer_tok, "train", data, max_sent=args.max_paragraph_length, k=args.k_distractor, fixed=args.truncate_paragraph, sentence=args.sentence)
@@ -91,7 +92,8 @@ def run_lm(model, batch, train):
     outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
     return outputs
 
-def run_para_model(linear, outputs, dropout_p, ds, ds2, train):
+def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
+    linear, mlp = layers
     pooled_output = outputs[1]
     m = nn.LogSoftmax(dim=-1)
     if train:
@@ -100,20 +102,32 @@ def run_para_model(linear, outputs, dropout_p, ds, ds2, train):
     logits = linear(pooled_output).view(-1)
     start, end = 0, 0
     all_normalized = []
+    all_second_normalized = []
     for i in range(len(ds)):
         d = ds[i]
         d2 = ds2[i]
         end += len(d)
         normalized = m(logits[start:end])
+        embeddings = []
         t = []
         for i in d2:
             l = d2[i]
+            embeddings.append(outputs[1][l[0]:l[-1]+1].mean(dim=0))
             new_t = torch.logsumexp(normalized[l[0]:l[-1]+1], dim=-1)
             t.append(new_t)
         normalized = torch.stack(t)
         all_normalized.append(normalized)
+        embeddings = torch.stack(embeddings)
+        p_num = len(embeddings)
+        a = embeddings.repeat(p_num, 1)
+        b = embeddings.repeat(1, p_num).view(p_num*p_num, -1)
+        diff = a - b
+        paired = torch.cat([a, b, diff], dim=1)
+        second_logits = mlp(paired).view(p_num, -1)
+        second_normalized = m(second_logits)
+        all_second_normalized.append(second_normalized)
         start = end
-    return all_normalized
+    return all_normalized, all_second_normalized
 
 def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
     m = nn.LogSoftmax(dim=-1)
@@ -144,14 +158,17 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
         start = end
     return groups
 
-def get_selected(paras, sents, kp, ks, mode):
-    all_ps_vals, all_top_pouts, all_top_souts = [], [], []
-    for p, s in zip(paras, sents):
+def get_selected(paras, sec_paras, sents, kp, ks, mode):
+    all_ps_vals, all_top_pouts, all_top_sec_pouts, all_top_souts = [], [], [], []
+    for p, sec_p, s in zip(paras, sec_paras, sents):
         if mode == "topk":
             top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else [p, torch.arange(len(p))]
             top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else [sent, torch.arange(len(sent))] for sent in s]
             top_svals = [i[0] for i in top_souts]
             top_souts = [i[1] for i in top_souts]
+            top_sec_pouts = [torch.topk(sp, k=kp) if len(p) > kp else [sp, torch.arange(len(sp))] for sp in sec_p]
+            top_sec_pvals = [i[0] for i in top_sec_pouts]
+            top_sec_pouts = [i[1] for i in top_sec_pouts]
         elif mode == "sample":
             top_pouts = torch.from_numpy(np.random.choice(range(len(p)), kp, replace=False)) if len(p) > kp else torch.arange(len(p))
             top_pvals = p[top_pouts]
@@ -174,7 +191,21 @@ def get_selected(paras, sents, kp, ks, mode):
             top_svals = [s[i][top_souts[i]] for i in range(len(s))]
         else:
             raise NotImplementedError
-        ps_vals = [val + top_svals[idx] for idx, val in zip(top_pouts, top_pvals)]
+        pp_vals = [val + top_sec_pvals[idx] for idx, val in zip(top_pouts, top_pvals)]
+        top_pouts = [(idx1, idx2) for idx1, idx2 in zip(top_pouts, top_sec_pouts)]
+        ps_vals = []
+        for idx, vals in zip(top_pouts, pp_vals):
+            idx1, idxes = idx
+            sent_val1 = top_svals[idx1]
+            sent_val2s = []
+            for j, idx2 in enumerate(idxes):
+                sent_val2 = top_svals[idx2] + vals[j]
+                sent_val2s.append(sent_val2)
+            sent_val2 = torch.cat(sent_val2s, dim=0)
+            sent_val1 = sent_val1.repeat(len(sent_val2)).view(len(sent_val2), -1)
+            sent_val = (sent_val1.T+sent_val2).T
+            sent_val = sent_val.view(-1)
+            ps_vals.append(sent_val)
         ps_vals = torch.cat(ps_vals, dim=0)
         all_ps_vals.append(ps_vals)
         all_top_pouts.append(top_pouts)
@@ -186,10 +217,17 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
     out_cs = []
     for cont, cur_tokp, cur_topks in zip(contexts, topkp, topks):
         l = 0
-        for elm in cur_tokp:
-            curr = [cont[elm][j] for j in cur_topks[elm]]
-            out_cs += curr
-            l += len(curr)
+        for idx1, idxes in cur_tokp:
+            curr1 = [cont[idx1][j] for j in cur_topks[idx1]]
+            curr2 = []
+            for idx2 in idxes:
+                curr2 += [cont[idx2][j] for j in cur_topks[idx2]]
+            for c1 in curr1:
+                for c2 in curr2:
+                    j = c2.index(tokenizer.sep_token_id)
+                    c2 = c2[j+1:]
+                    out_cs.append(c1+c2)
+                    l += 1
         lens.append(l)
     out_cs = [{"input_ids": c} for c in out_cs]
     out = tokenizer.pad(
@@ -247,9 +285,9 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
             batch[key] = batch[key].to(device)
     bs = len(batch["answers"])
     lm_outs = run_lm(layers[0], batch, train=train)
-    pouts = run_para_model(layers[1], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
-    souts = run_sent_model(layers[2], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
-    para_sent, top_pouts, top_souts = get_selected(pouts, souts, topkp, topks, mode=mode)
+    pouts, second_pouts = run_para_model(layers[1:3], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
+    souts = run_sent_model(layers[3], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
+    para_sent, top_pouts, top_souts = get_selected(pouts, second_pouts, souts, topkp, topks, mode=mode)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
     in_len = len(answer_in)
@@ -275,6 +313,9 @@ def update_sp(preds, golds):
                         tp += 1
                     else:
                         fp += 1
+            else:
+                for v in cur_sp_pred[e]:
+                    fp += 1
         for e in gold_sp_pred:
             if e not in cur_sp_pred:
                 fn += len(gold_sp_pred[e])
@@ -324,17 +365,13 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         )
         prior_sent_preds = [dict() for _ in scores]
         for i in range(len(scores)):
-            x, y = top_pouts[i][:2].cpu().tolist()
-            if x not in eval_batch['s_maps'][i]:
-                prior_sent_preds[i][x] = None
-            else:
-                s0 = eval_batch['s_maps'][i][x][top_souts[i][x][0].item()]
-                prior_sent_preds[i][x] = s0
-            if y not in eval_batch['s_maps'][i]:
-                prior_sent_preds[i][y] = None
-            else:
-                s1 = eval_batch['s_maps'][i][y][top_souts[i][y][0].item()]
-                prior_sent_preds[i][y] = s1
+            x, y = top_pouts[i][0]
+            y = y[0] if y[0] != x else y[1]
+            x, y = x.item(), y.item()
+            s0 = eval_batch['s_maps'][i][x][top_souts[i][x][0].item()]
+            prior_sent_preds[i][x] = s0
+            s1 = eval_batch['s_maps'][i][y][top_souts[i][y][0].item()]
+            prior_sent_preds[i][y] = s1
         para_results += prior_sent_preds
         gold_paras += eval_batch['s_labels']
     eval_metric = exact_match.compute()
