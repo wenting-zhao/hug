@@ -136,8 +136,7 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
             combs = torch.combinations(torch.arange(group_by_p[i].shape[0]))
             C = len(combs)
             paired = group_by_p[i][combs,:]
-            #added = torch.mean(paired, dim=1)
-            added = torch.sum(paired, dim=1)
+            added = torch.mean(paired, dim=1)
             group_by_p[i] = torch.cat([group_by_p[i], added], dim=0)
             group_by_p[i] = linear(group_by_p[i]).view(-1)
             group_by_p[i] = m(group_by_p[i])
