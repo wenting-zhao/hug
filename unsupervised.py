@@ -248,6 +248,8 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
 
 def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train):
     answs[answs==model.config.pad_token_id] = -100
+    input_ids = input_ids[:, :512]
+    attn_mask = attn_mask[:, :512]
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
