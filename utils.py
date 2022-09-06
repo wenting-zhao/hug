@@ -55,6 +55,7 @@ def get_args():
     parser.add_argument('--max_e_len', default=3, type=int)
     parser.add_argument('--beam', default=2, type=int)
     parser.add_argument('--topkp', default=5, type=int)
+    parser.add_argument('--topksecp', default=5, type=int)
     parser.add_argument('--topks', default=5, type=int)
     parser.add_argument('--mode', default="topk", type=str)
     parser.add_argument("--batch_size", '-b', default=1, type=int,

@@ -158,7 +158,7 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
         start = end
     return groups
 
-def get_selected(paras, sec_paras, sents, kp, ks, mode):
+def get_selected(paras, sec_paras, sents, kp, sec_kp, ks, mode):
     all_ps_vals, all_top_pouts, all_top_sec_pouts, all_top_souts = [], [], [], []
     for p, sec_p, s in zip(paras, sec_paras, sents):
         if mode == "topk":
@@ -166,7 +166,7 @@ def get_selected(paras, sec_paras, sents, kp, ks, mode):
             top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else torch.topk(sent, k=len(sent)) for sent in s]
             top_svals = [i[0] for i in top_souts]
             top_souts = [i[1] for i in top_souts]
-            top_sec_pouts = [torch.topk(sp, k=kp) if len(p) > kp else torch.topk(sp, k=len(sp)) for sp in sec_p]
+            top_sec_pouts = [torch.topk(sp, k=sec_kp) if len(p) > sec_kp else torch.topk(sp, k=len(sp)) for sp in sec_p]
             top_sec_pvals = [i[0] for i in top_sec_pouts]
             top_sec_pouts = [i[1] for i in top_sec_pouts]
         elif mode == "sample":
@@ -248,8 +248,8 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
 
 def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train):
     answs[answs==model.config.pad_token_id] = -100
-    input_ids = input_ids[:, :512]
-    attn_mask = attn_mask[:, :512]
+    input_ids = input_ids[:, :350]
+    attn_mask = attn_mask[:, :350]
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
@@ -281,7 +281,7 @@ def process_answ(answ, ps_out, in_len):
     else:
         return outs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, mode, topkp, topks, beam=2, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, mode, topkp, sec_topkp, topks, beam=2, train=True):
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
@@ -289,7 +289,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     lm_outs = run_lm(layers[0], batch, train=train)
     pouts, second_pouts = run_para_model(layers[1:3], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
     souts = run_sent_model(layers[3], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
-    para_sent, top_pouts, top_souts = get_selected(pouts, second_pouts, souts, topkp, topks, mode=mode)
+    para_sent, top_pouts, top_souts = get_selected(pouts, second_pouts, souts, topkp, sec_topkp, topks, mode=mode)
     answer_in, answer_attn, labels = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
     in_len = len(answer_in)
@@ -347,7 +347,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         eval_outs, sent_preds, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False,
-                mode="topk", topkp=args.topkp, topks=args.topks, beam=args.beam)
+                mode="topk", topkp=args.topkp, sec_topkp=args.topksecp, topks=args.topks, beam=args.beam)
         eval_outs, scores = eval_outs
         para_sent, top_pouts, top_souts = sent_preds
         ans_prior_preds = []
@@ -398,7 +398,7 @@ def main():
     train_dataloader, eval_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks} mode-{args.mode}'
+    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp}-{args.topksecp} topks-{args.topks} mode-{args.mode}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
@@ -439,7 +439,7 @@ def main():
                 answer_model.train()
             _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
                     answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p,
-                    mode=args.mode, topkp=args.topkp, topks=args.topks)
+                    mode=args.mode, topkp=args.topkp, sec_topkp=args.topksecp, topks=args.topks)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
