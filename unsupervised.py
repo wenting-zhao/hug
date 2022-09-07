@@ -215,20 +215,24 @@ def get_selected(paras, sec_paras, sents, kp, sec_kp, ks, mode):
 def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
     lens = []
     out_cs = []
+    indices = []
     for cont, cur_tokp, cur_topks in zip(contexts, topkp, topks):
         l = 0
+        curr_idx = []
         for idx1, idxes in cur_tokp:
-            curr1 = [cont[idx1][j] for j in cur_topks[idx1]]
+            curr1 = [(idx1, j, cont[idx1][j]) for j in cur_topks[idx1]]
             curr2 = []
             for idx2 in idxes:
-                curr2 += [cont[idx2][j] for j in cur_topks[idx2]]
-            for c1 in curr1:
-                for c2 in curr2:
+                curr2 += [(idx2, j, cont[idx2][j]) for j in cur_topks[idx2]]
+            for idx1, j1, c1 in curr1:
+                for idx2, j2, c2 in curr2:
+                    curr_idx.append((idx1, idx2, j1, j2))
                     j = c2.index(tokenizer.sep_token_id)
                     c2 = c2[j+1:]
                     out_cs.append(c1+c2)
                     l += 1
         lens.append(l)
+        indices.append(curr_idx)
     out_cs = [{"input_ids": c} for c in out_cs]
     out = tokenizer.pad(
         out_cs,
@@ -244,12 +248,12 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
         return_tensors="pt",
         return_attention_mask=False,
     )['input_ids']
-    return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
+    return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device), indices
 
 def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train):
     answs[answs==model.config.pad_token_id] = -100
-    input_ids = input_ids[:, :350]
-    attn_mask = attn_mask[:, :350]
+    input_ids = input_ids[:, :300]
+    attn_mask = attn_mask[:, :300]
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
@@ -290,7 +294,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     pouts, second_pouts = run_para_model(layers[1:3], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
     souts = run_sent_model(layers[3], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
     para_sent, top_pouts, top_souts = get_selected(pouts, second_pouts, souts, topkp, sec_topkp, topks, mode=mode)
-    answer_in, answer_attn, labels = pad_answers(
+    answer_in, answer_attn, labels, indices = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
     in_len = len(answer_in)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
@@ -302,7 +306,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
             l = torch.logsumexp(l, dim=-1)
             loss -= l.mean()
     loss /= bs
-    return answ_out, (para_sent, top_pouts, top_souts), loss
+    return answ_out, (para_sent, top_pouts, top_souts, indices), loss
 
 def update_sp(preds, golds):
     sp_em, sp_f1 = 0, 0
@@ -349,14 +353,17 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False,
                 mode="topk", topkp=args.topkp, sec_topkp=args.topksecp, topks=args.topks, beam=args.beam)
         eval_outs, scores = eval_outs
-        para_sent, top_pouts, top_souts = sent_preds
+        para_sent, top_pouts, top_souts, indices = sent_preds
         ans_prior_preds = []
+        prior_sent_preds = [dict() for _ in scores]
         for i in range(len(scores)):
-            scores[i] = scores[i] + para_sent[i]
             j = para_sent[i].argmax(dim=-1).item()
             curr_out = eval_outs[i][j]
             pred = tok.decode(curr_out, skip_special_tokens=True)
             ans_prior_preds.append(pred)
+            x, y, k1, k2 = indices[i][j]
+            prior_sent_preds[i][x] = eval_batch['s_maps'][i][x][k1]
+            prior_sent_preds[i][y] = eval_batch['s_maps'][i][y][k2]
         gold = [normalize_answer(s) for s in gold]
         ans_prior_preds = [normalize_answer(s) for s in ans_prior_preds]
         if args.save_results and split == "Valid":
@@ -365,15 +372,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             predictions=ans_prior_preds,
             references=gold,
         )
-        prior_sent_preds = [dict() for _ in scores]
-        for i in range(len(scores)):
-            x, y = top_pouts[i][0]
-            y = y[0] if y[0] != x else y[1]
-            x, y = x.item(), y.item()
-            s0 = eval_batch['s_maps'][i][x][top_souts[i][x][0].item()]
-            prior_sent_preds[i][x] = s0
-            s1 = eval_batch['s_maps'][i][y][top_souts[i][y][0].item()]
-            prior_sent_preds[i][y] = s1
         para_results += prior_sent_preds
         gold_paras += eval_batch['s_labels']
     eval_metric = exact_match.compute()
