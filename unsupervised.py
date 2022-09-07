@@ -175,19 +175,26 @@ def get_selected(paras, sec_paras, sents, kp, sec_kp, ks, mode):
             top_souts = [torch.from_numpy(np.random.choice(range(len(sent)), ks, replace=False)) if len(sent) > ks else torch.arange(len(sent)) for sent in s]
             top_svals = [s[i][top_souts[i]] for i in range(len(s))]
         elif mode == "topk_sample":
-            top_p = torch.topk(p, k=1).indices.item()
-            top_s = [torch.topk(sent, k=1).indices.item() for sent in s]
+            top_p = torch.argmax(p, dim=-1).item()
+            top_sec_p = [torch.argmax(sp, dim=-1).item() for sp in sec_p]
+            top_s = [torch.argmax(sent, dim=-1).item() for sent in s]
             plist = list(range(len(p)))
             plist.remove(top_p)
             slist = [list(range(len(sent))) for sent in s]
             [sl.remove(curr_top_s) for sl, curr_top_s in zip(slist, top_s)]
+            splist = [list(range(len(sp))) for sp in sec_p]
+            [spl.remove(curr_top_sp) for spl, curr_top_sp in zip(splist, top_sec_p)]
             rand_pouts = np.random.choice(plist, kp, replace=False) if len(plist) > kp else np.array(plist, dtype=np.compat.long)
+            rand_spouts = [np.random.choice(spl, sec_kp, replace=False) if len(spl) > sec_kp else np.array(spl, dtype=np.compat.long) for spl in splist]
             rand_souts = [np.random.choice(sl, ks, replace=False) if len(sl) > ks else np.array(sl, dtype=np.compat.long) for sl in slist]
             rand_pouts = np.append(rand_pouts, top_p)
+            rand_spouts = [np.append(spl, tsp) for spl, tsp in zip(rand_spouts, top_sec_p)]
             rand_souts = [np.append(sl, ts) for sl, ts in zip(rand_souts, top_s)]
             top_pouts = torch.from_numpy(rand_pouts)
+            top_psouts = [torch.from_numpy(spl) for spl in rand_spouts]
             top_souts = [torch.from_numpy(sl) for sl in rand_souts]
             top_pvals = p[top_pouts]
+            top_psvals = [sec_p[i][top_psouts[i]] for i in range(len(sec_p))]
             top_svals = [s[i][top_souts[i]] for i in range(len(s))]
         else:
             raise NotImplementedError
