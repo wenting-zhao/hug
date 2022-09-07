@@ -172,6 +172,8 @@ def get_selected(paras, sec_paras, sents, kp, sec_kp, ks, mode):
         elif mode == "sample":
             top_pouts = torch.from_numpy(np.random.choice(range(len(p)), kp, replace=False)) if len(p) > kp else torch.arange(len(p))
             top_pvals = p[top_pouts]
+            top_sec_pouts = [torch.from_numpy(np.random.choice(range(len(sp)), sec_kp, replace=False)) if len(sp) > sec_kp else torch.arange(len(sp)) for sp in sec_p]
+            top_sec_pvals = [sec_p[i][top_sec_pouts[i]] for i in range(len(sec_p))]
             top_souts = [torch.from_numpy(np.random.choice(range(len(sent)), ks, replace=False)) if len(sent) > ks else torch.arange(len(sent)) for sent in s]
             top_svals = [s[i][top_souts[i]] for i in range(len(s))]
         elif mode == "topk_sample":
@@ -191,10 +193,10 @@ def get_selected(paras, sec_paras, sents, kp, sec_kp, ks, mode):
             rand_spouts = [np.append(spl, tsp) for spl, tsp in zip(rand_spouts, top_sec_p)]
             rand_souts = [np.append(sl, ts) for sl, ts in zip(rand_souts, top_s)]
             top_pouts = torch.from_numpy(rand_pouts)
-            top_psouts = [torch.from_numpy(spl) for spl in rand_spouts]
+            top_sec_pouts = [torch.from_numpy(spl) for spl in rand_spouts]
             top_souts = [torch.from_numpy(sl) for sl in rand_souts]
             top_pvals = p[top_pouts]
-            top_psvals = [sec_p[i][top_psouts[i]] for i in range(len(sec_p))]
+            top_sec_pvals = [sec_p[i][top_sec_pouts[i]] for i in range(len(sec_p))]
             top_svals = [s[i][top_souts[i]] for i in range(len(s))]
         else:
             raise NotImplementedError
