@@ -71,10 +71,18 @@ class DataCollatorForMultipleChoice:
         return batch
 
 def prepare_model(args):
-    model = AutoModel.from_pretrained(args.model_dir)
+    #model = AutoModel.from_pretrained(args.model_dir)
+    model = AutoModel.from_pretrained('saved_models/model-all-distilroberta-v1 lr-1e-05 bs-2 k-8 tp-3 beam-1 topkp-5 topks-5 mode-topk')
     model = model.to(device)
-    linear1 = prepare_linear(model.config.hidden_size)
-    linear2 = prepare_linear(model.config.hidden_size)
+    for p in model.parameters():
+        p.requires_grad = False
+    #linear1 = prepare_linear(model.config.hidden_size)
+    #linear2 = prepare_linear(model.config.hidden_size)
+    linear1, linear2 = torch.load('saved_models/model-all-distilroberta-v1 lr-1e-05 bs-2 k-8 tp-3 beam-1 topkp-5 topks-5 mode-topk-others.pt')
+    linear1.requires_grad = False
+    linear2.requires_grad = False
+    linear1 = linear1.to(device)
+    linear2 = linear2.to(device)
     mlp = prepare_mlp(model.config.hidden_size*3)
     return [model, linear1, mlp, linear2]
 
@@ -405,16 +413,18 @@ def main():
     train_dataloader, eval_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp}-{args.topksecp} topks-{args.topks} mode-{args.mode}'
+    run_name=f'freeze model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp}-{args.topksecp} topks-{args.topks} mode-{args.mode}'
     args.run_name = run_name
     all_layers = prepare_model(args)
-    answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
+    answer_model = AutoModelForSeq2SeqLM.from_pretrained('saved_models/model-all-distilroberta-v1 lr-1e-05 bs-2 k-8 tp-3 beam-1 topkp-5 topks-5 mode-topk-answer')
+    for p in answer_model.parameters():
+        p.requires_grad = False
     answer_model = answer_model.to(device)
 
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     args.max_train_steps = args.epoch * num_update_steps_per_epoch
     total_batch_size = args.batch_size * args.gradient_accumulation_steps
-    optim, lr_scheduler = prepare_optim_and_scheduler(all_layers+[answer_model], args)
+    optim, lr_scheduler = prepare_optim_and_scheduler([all_layers[2]], args)
 
     progress_bar = tqdm(range(args.max_train_steps))
     completed_steps = 0
