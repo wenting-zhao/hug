@@ -374,7 +374,14 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         ans_prior_preds = []
         prior_sent_preds = [dict() for _ in scores]
         for i in range(len(scores)):
-            j = para_sent[i].argmax(dim=-1).item()
+            if para_sent[i].size(0) < 11:
+                order = torch.argsort(para_sent[i], dim=-1, descending=True).cpu().tolist()
+            else:
+                order = torch.topk(para_sent[i], k=11, dim=-1).indices.cpu().tolist()
+            j = 0
+            while indices[i][order[j]][0] == indices[i][order[j]][1]:
+                j += 1
+            j = order[j]
             curr_out = eval_outs[i][j]
             pred = tok.decode(curr_out, skip_special_tokens=True)
             ans_prior_preds.append(pred)
