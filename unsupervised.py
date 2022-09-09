@@ -108,11 +108,12 @@ def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
         d2 = ds2[i]
         end += len(d)
         normalized = m(logits[start:end])
+        curr_pooled_output = pooled_output[start:end]
         embeddings = []
         t = []
         for i in d2:
             l = d2[i]
-            embeddings.append(outputs[1][l[0]:l[-1]+1].mean(dim=0))
+            embeddings.append(curr_pooled_output[l[0]:l[-1]+1].mean(dim=0))
             new_t = torch.logsumexp(normalized[l[0]:l[-1]+1], dim=-1)
             t.append(new_t)
         normalized = torch.stack(t)
@@ -121,7 +122,7 @@ def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
         p_num = len(embeddings)
         a = embeddings.repeat(p_num, 1)
         b = embeddings.repeat(1, p_num).view(p_num*p_num, -1)
-        diff = a - b
+        diff = torch.abs(a - b)
         paired = torch.cat([a, b, diff], dim=1)
         second_logits = mlp(paired).view(p_num, -1)
         second_normalized = m(second_logits)
@@ -349,7 +350,6 @@ def update_sp(preds, golds):
     return sp_em, sp_f1
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
-    m = nn.LogSoftmax(dim=-1)
     exact_match = load_metric("exact_match")
     para_results = []
     gold_paras = []
@@ -366,7 +366,14 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         ans_prior_preds = []
         prior_sent_preds = [dict() for _ in scores]
         for i in range(len(scores)):
-            j = para_sent[i].argmax(dim=-1).item()
+            if para_sent[i].size(0) < 11:
+                order = torch.argsort(para_sent[i], dim=-1, descending=True).cpu().tolist()
+            else:
+                order = torch.topk(para_sent[i], k=11, dim=-1).indices.cpu().tolist()
+            j = 0
+            while indices[i][order[j]][0] == indices[i][order[j]][1]:
+                j += 1
+            j = order[j]
             curr_out = eval_outs[i][j]
             pred = tok.decode(curr_out, skip_special_tokens=True)
             ans_prior_preds.append(pred)
@@ -395,7 +402,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     if args.save_results and split == "Valid":
         torch.save((para_results, gold_paras, answ_results), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
     return eval_metric['exact_match']
-
 
 def main():
     args = get_args()
