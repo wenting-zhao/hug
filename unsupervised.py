@@ -118,9 +118,10 @@ def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
         normalized = m(logits[start:end])
         embeddings = []
         t = []
+        curr_pooled_output = pooled_output[start:end]
         for i in d2:
             l = d2[i]
-            embeddings.append(outputs[1][l[0]:l[-1]+1].mean(dim=0))
+            embeddings.append(curr_pooled_output[l[0]:l[-1]+1].mean(dim=0))
             new_t = torch.logsumexp(normalized[l[0]:l[-1]+1], dim=-1)
             t.append(new_t)
         normalized = torch.stack(t)
@@ -129,7 +130,7 @@ def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
         p_num = len(embeddings)
         a = embeddings.repeat(p_num, 1)
         b = embeddings.repeat(1, p_num).view(p_num*p_num, -1)
-        diff = a - b
+        diff = torch.abs(a - b)
         paired = torch.cat([a, b, diff], dim=1)
         second_logits = mlp(paired).view(p_num, -1)
         second_normalized = m(second_logits)
