@@ -234,8 +234,8 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
             curr2 = []
             for idx2 in idxes:
                 curr2 += [(idx2, j, cont[idx2][j]) for j in cur_topks[idx2]]
-            for idx1, j1, c1 in curr1:
-                for idx2, j2, c2 in curr2:
+            for idx2, j2, c2 in curr2:
+                for idx1, j1, c1 in curr1:
                     curr_idx.append((idx1.item(), idx2.item(), j1.item(), j2.item()))
                     j = c2.index(tokenizer.sep_token_id)
                     c2 = c2[j+1:]
