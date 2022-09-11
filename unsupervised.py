@@ -97,7 +97,7 @@ def prepare_dataloader(data, tok, answer_tok, args):
     return train_dataloader, eval_dataloader
 
 def run_lm(model, batch, train):
-    outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+    outputs = model(input_ids=batch['input_ids'][:, :450], attention_mask=batch['attention_mask'][:, :450])
     return outputs
 
 def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
@@ -410,7 +410,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         })
     if args.save_results and split == "Valid":
         torch.save((para_results, gold_paras, answ_results), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
-    return eval_metric['exact_match']
+    return supp_f1
 
 
 def main():
@@ -460,6 +460,8 @@ def main():
                     best_valid = valid_acc
                     if args.save_model:
                         all_layers[0].save_pretrained(f"{args.output_model_dir}/{run_name}")
+                        torch.save(all_layers[1:], f"{args.output_model_dir}/{run_name}-others.pt")
+                        answer_model.save_pretrained(f"{args.output_model_dir}/{run_name}-answer")
                 all_layers[0].train()
                 answer_model.train()
             _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
