@@ -116,6 +116,7 @@ def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
         d2 = ds2[i]
         end += len(d)
         normalized = m(logits[start:end])
+        curr_pooled_output = pooled_output[start:end]
         embeddings = []
         t = []
         curr_pooled_output = pooled_output[start:end]
@@ -242,11 +243,13 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
             curr2 = []
             for idx2 in idxes:
                 curr2 += [(idx2, j, cont[idx2][j]) for j in cur_topks[idx2]]
-            for idx1, j1, c1 in curr1:
-                for idx2, j2, c2 in curr2:
-                    curr_idx.append((idx1.item(), idx2.item(), j1.item(), j2.item()))
-                    j = c2.index(tokenizer.sep_token_id)
-                    c2 = c2[j+1:]
+            for idx2, j2, c2 in curr2:
+                j = c2.index(tokenizer.sep_token_id)
+                c2 = c2[j+1:]
+                idx2 = idx2.item()
+                j2 = j2.item()
+                for idx1, j1, c1 in curr1:
+                    curr_idx.append((idx1.item(), idx2, j1.item(), j2))
                     out_cs.append(c1+c2)
                     l += 1
         lens.append(l)
@@ -358,7 +361,6 @@ def update_sp(preds, golds):
     return sp_em, sp_f1
 
 def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
-    m = nn.LogSoftmax(dim=-1)
     exact_match = load_metric("exact_match")
     para_results = []
     gold_paras = []
@@ -380,7 +382,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             else:
                 order = torch.topk(para_sent[i], k=11, dim=-1).indices.cpu().tolist()
             j = 0
-            while indices[i][order[j]][0] == indices[i][order[j]][1]:
+            while indices[i][order[j]][0] == indices[i][order[j]][1] and j < len(order) - 1:
                 j += 1
             j = order[j]
             curr_out = eval_outs[i][j]
@@ -411,7 +413,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     if args.save_results and split == "Valid":
         torch.save((para_results, gold_paras, answ_results), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
     return supp_f1
-
 
 def main():
     args = get_args()
