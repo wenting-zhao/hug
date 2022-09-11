@@ -88,7 +88,7 @@ def prepare_dataloader(data, tok, answer_tok, args):
     return train_dataloader, eval_dataloader
 
 def run_lm(model, batch, train):
-    outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+    outputs = model(input_ids=batch['input_ids'][:, :450], attention_mask=batch['attention_mask'][:, :450])
     return outputs
 
 def run_para_model(linear, outputs, dropout_p, ds, ds2, train):
@@ -210,6 +210,8 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
 
 def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train):
     answs[answs==model.config.pad_token_id] = -100
+    input_ids = input_ids[:, :300]
+    attn_mask = attn_mask[:, :300]
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
