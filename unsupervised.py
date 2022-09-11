@@ -166,7 +166,7 @@ def get_selected(paras, sec_paras, sents, kp, ks, mode):
         pp_vals = torch.stack(pp_vals)
         indices = torch.triu_indices(len(pp_vals), len(pp_vals), 1, device=device)
         pp_vals = pp_vals[indices[0, :], indices[1, :]]
-        top_pvals, top_pouts = torch.topk(pp_vals, k=kp) if len(pp_vals) > kp else torch.topk(pp_vals, k=len(p))
+        top_pvals, top_pouts = torch.topk(pp_vals, k=kp) if len(pp_vals) > kp else torch.topk(pp_vals, k=len(pp_vals))
         top_pouts = indices[:, top_pouts].T.cpu().tolist()
         ps_vals = []
         top_souts = []
