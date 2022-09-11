@@ -159,63 +159,24 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
         start = end
     return groups
 
-def get_selected(paras, sec_paras, sents, kp, sec_kp, ks, mode):
-    all_ps_vals, all_top_pouts, all_top_sec_pouts, all_top_souts = [], [], [], []
+def get_selected(paras, sec_paras, sents, kp, ks, mode):
+    all_ps_vals, all_top_pouts, all_top_souts = [], [], []
     for p, sec_p, s in zip(paras, sec_paras, sents):
-        if mode == "topk":
-            top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else torch.topk(p, k=len(p))
-            top_souts = [torch.topk(sent, k=ks) if len(sent) > ks else torch.topk(sent, k=len(sent)) for sent in s]
-            top_svals = [i[0] for i in top_souts]
-            top_souts = [i[1] for i in top_souts]
-            top_sec_pouts = [torch.topk(sp, k=sec_kp) if len(p) > sec_kp else torch.topk(sp, k=len(sp)) for sp in sec_p]
-            top_sec_pvals = [i[0] for i in top_sec_pouts]
-            top_sec_pouts = [i[1] for i in top_sec_pouts]
-        elif mode == "sample":
-            top_pouts = torch.from_numpy(np.random.choice(range(len(p)), kp, replace=False)) if len(p) > kp else torch.arange(len(p))
-            top_pvals = p[top_pouts]
-            top_sec_pouts = [torch.from_numpy(np.random.choice(range(len(sp)), sec_kp, replace=False)) if len(sp) > sec_kp else torch.arange(len(sp)) for sp in sec_p]
-            top_sec_pvals = [sec_p[i][top_sec_pouts[i]] for i in range(len(sec_p))]
-            top_souts = [torch.from_numpy(np.random.choice(range(len(sent)), ks, replace=False)) if len(sent) > ks else torch.arange(len(sent)) for sent in s]
-            top_svals = [s[i][top_souts[i]] for i in range(len(s))]
-        elif mode == "topk_sample":
-            top_p = torch.argmax(p, dim=-1).item()
-            top_sec_p = [torch.argmax(sp, dim=-1).item() for sp in sec_p]
-            top_s = [torch.argmax(sent, dim=-1).item() for sent in s]
-            plist = list(range(len(p)))
-            plist.remove(top_p)
-            slist = [list(range(len(sent))) for sent in s]
-            [sl.remove(curr_top_s) for sl, curr_top_s in zip(slist, top_s)]
-            splist = [list(range(len(sp))) for sp in sec_p]
-            [spl.remove(curr_top_sp) for spl, curr_top_sp in zip(splist, top_sec_p)]
-            rand_pouts = np.random.choice(plist, kp, replace=False) if len(plist) > kp else np.array(plist, dtype=np.compat.long)
-            rand_spouts = [np.random.choice(spl, sec_kp, replace=False) if len(spl) > sec_kp else np.array(spl, dtype=np.compat.long) for spl in splist]
-            rand_souts = [np.random.choice(sl, ks, replace=False) if len(sl) > ks else np.array(sl, dtype=np.compat.long) for sl in slist]
-            rand_pouts = np.append(rand_pouts, top_p)
-            rand_spouts = [np.append(spl, tsp) for spl, tsp in zip(rand_spouts, top_sec_p)]
-            rand_souts = [np.append(sl, ts) for sl, ts in zip(rand_souts, top_s)]
-            top_pouts = torch.from_numpy(rand_pouts)
-            top_sec_pouts = [torch.from_numpy(spl) for spl in rand_spouts]
-            top_souts = [torch.from_numpy(sl) for sl in rand_souts]
-            top_pvals = p[top_pouts]
-            top_sec_pvals = [sec_p[i][top_sec_pouts[i]] for i in range(len(sec_p))]
-            top_svals = [s[i][top_souts[i]] for i in range(len(s))]
-        else:
-            raise NotImplementedError
-        pp_vals = [val + top_sec_pvals[idx] for idx, val in zip(top_pouts, top_pvals)]
-        top_pouts = [(idx1, idx2) for idx1, idx2 in zip(top_pouts, top_sec_pouts)]
+        pp_vals = [first + second for first, second in zip(p, sec_p)]
+        pp_vals = torch.stack(pp_vals)
+        indices = torch.triu_indices(len(pp_vals), len(pp_vals), 1, device=device)
+        pp_vals = pp_vals[indices[0, :], indices[1, :]]
+        top_pvals, top_pouts = torch.topk(pp_vals, k=kp) if len(pp_vals) > kp else torch.topk(pp_vals, k=len(p))
+        top_pouts = indices[:, top_pouts].T.cpu().tolist()
         ps_vals = []
-        for idx, vals in zip(top_pouts, pp_vals):
-            idx1, idxes = idx
-            sent_val1 = top_svals[idx1]
-            sent_val2s = []
-            for j, idx2 in enumerate(idxes):
-                sent_val2 = top_svals[idx2] + vals[j]
-                sent_val2s.append(sent_val2)
-            sent_val2 = torch.cat(sent_val2s, dim=0)
-            sent_val1 = sent_val1.repeat(len(sent_val2)).view(len(sent_val2), -1)
-            sent_val = (sent_val1.T+sent_val2).T
+        top_souts = []
+        for (i, j), val in zip(top_pouts, pp_vals):
+            sent_val = s[i].repeat(len(s[j])).view(len(s[j]), -1)
+            sent_val = (sent_val.T+s[j]).T
             sent_val = sent_val.view(-1)
-            ps_vals.append(sent_val)
+            top_sval, top_sout = torch.topk(sent_val, k=ks) if len(sent_val) > ks else torch.topk(sent_val, k=len(p))
+            top_souts.append(torch.cat([top_sout % len(s[i]), top_sout // len(s[i])], dim=0).view(2, -1).T.cpu().tolist())
+            ps_vals.append(val + top_sval)
         ps_vals = torch.cat(ps_vals, dim=0)
         all_ps_vals.append(ps_vals)
         all_top_pouts.append(top_pouts)
@@ -229,20 +190,15 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
     for cont, cur_tokp, cur_topks in zip(contexts, topkp, topks):
         l = 0
         curr_idx = []
-        for idx1, idxes in cur_tokp:
-            curr1 = [(idx1, j, cont[idx1][j]) for j in cur_topks[idx1]]
-            curr2 = []
-            for idx2 in idxes:
-                curr2 += [(idx2, j, cont[idx2][j]) for j in cur_topks[idx2]]
-            for idx2, j2, c2 in curr2:
+        for (idx1, idx2), cur_cur_topks in zip(cur_tokp, cur_topks):
+            for j1, j2 in cur_cur_topks:
+                c1 = cont[idx1][j1]
+                c2 = cont[idx2][j2]
                 j = c2.index(tokenizer.sep_token_id)
                 c2 = c2[j+1:]
-                idx2 = idx2.item()
-                j2 = j2.item()
-                for idx1, j1, c1 in curr1:
-                    curr_idx.append((idx1.item(), idx2, j1.item(), j2))
-                    out_cs.append(c1+c2)
-                    l += 1
+                curr_idx.append((idx1, idx2, j1, j2))
+                out_cs.append(c1+c2)
+                l += 1
         lens.append(l)
         indices.append(curr_idx)
     out_cs = [{"input_ids": c} for c in out_cs]
@@ -305,7 +261,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     lm_outs = run_lm(layers[0], batch, train=train)
     pouts, second_pouts = run_para_model(layers[1:3], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
     souts = run_sent_model(layers[3], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
-    para_sent, top_pouts, top_souts = get_selected(pouts, second_pouts, souts, topkp, sec_topkp, topks, mode=mode)
+    para_sent, top_pouts, top_souts = get_selected(pouts, second_pouts, souts, topkp, topks, mode=mode)
     answer_in, answer_attn, labels, indices = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
     in_len = len(answer_in)
