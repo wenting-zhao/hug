@@ -119,7 +119,6 @@ def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
         curr_pooled_output = pooled_output[start:end]
         embeddings = []
         t = []
-        curr_pooled_output = pooled_output[start:end]
         for i in d2:
             l = d2[i]
             embeddings.append(curr_pooled_output[l[0]:l[-1]+1].mean(dim=0))
