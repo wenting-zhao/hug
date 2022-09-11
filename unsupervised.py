@@ -373,7 +373,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             else:
                 order = torch.topk(para_sent[i], k=11, dim=-1).indices.cpu().tolist()
             j = 0
-            while indices[i][order[j]][0] == indices[i][order[j]][1] and j < len(order):
+            while indices[i][order[j]][0] == indices[i][order[j]][1] and j < len(order) - 1:
                 j += 1
             j = order[j]
             curr_out = eval_outs[i][j]
