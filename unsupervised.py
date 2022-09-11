@@ -174,7 +174,7 @@ def get_selected(paras, sec_paras, sents, kp, ks, mode):
             sent_val = s[i].repeat(len(s[j])).view(len(s[j]), -1)
             sent_val = (sent_val.T+s[j]).T
             sent_val = sent_val.view(-1)
-            top_sval, top_sout = torch.topk(sent_val, k=ks) if len(sent_val) > ks else torch.topk(sent_val, k=len(p))
+            top_sval, top_sout = torch.topk(sent_val, k=ks) if len(sent_val) > ks else torch.topk(sent_val, k=len(sent_val))
             top_souts.append(torch.cat([top_sout % len(s[i]), top_sout // len(s[i])], dim=0).view(2, -1).T.cpu().tolist())
             ps_vals.append(val + top_sval)
         ps_vals = torch.cat(ps_vals, dim=0)
