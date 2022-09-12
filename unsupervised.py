@@ -315,7 +315,6 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         prior_sent_preds = [dict() for _ in scores]
         for i in range(len(scores)):
             j = torch.argmax(para_sent[i], dim=-1).item()
-            j = order[j]
             curr_out = eval_outs[i][j]
             pred = tok.decode(curr_out, skip_special_tokens=True)
             ans_prior_preds.append(pred)
