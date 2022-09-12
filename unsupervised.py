@@ -99,36 +99,30 @@ def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
     if train:
         dropout = nn.Dropout(dropout_p)
         pooled_output = dropout(pooled_output)
-    logits = linear(pooled_output).view(-1)
     start, end = 0, 0
     all_normalized = []
-    all_second_normalized = []
+    all_combs = []
     for i in range(len(ds)):
         d = ds[i]
         d2 = ds2[i]
         end += len(d)
-        normalized = m(logits[start:end])
         curr_pooled_output = pooled_output[start:end]
         embeddings = []
-        t = []
         for i in d2:
             l = d2[i]
             embeddings.append(curr_pooled_output[l[0]:l[-1]+1].mean(dim=0))
-            new_t = torch.logsumexp(normalized[l[0]:l[-1]+1], dim=-1)
-            t.append(new_t)
-        normalized = torch.stack(t)
-        all_normalized.append(normalized)
         embeddings = torch.stack(embeddings)
         p_num = len(embeddings)
-        a = embeddings.repeat(p_num, 1)
-        b = embeddings.repeat(1, p_num).view(p_num*p_num, -1)
-        diff = torch.abs(a - b)
-        paired = torch.cat([a, b, diff], dim=1)
-        second_logits = mlp(paired).view(p_num, -1)
-        second_normalized = m(second_logits)
-        all_second_normalized.append(second_normalized)
+        combs = torch.combinations(torch.arange(p_num))
+        paired = embeddings[combs,:]
+        diff = torch.abs(paired[:, 0] - paired[:, 1])
+        pairs = torch.cat([paired.view(len(combs), -1), diff], dim=1)
+        out = mlp(pairs).view(-1)
+        normalized = m(out)
+        all_normalized.append(normalized)
+        all_combs.append(combs)
         start = end
-    return all_normalized, all_second_normalized
+    return all_normalized, all_combs
 
 def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
     m = nn.LogSoftmax(dim=-1)
@@ -159,18 +153,14 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, ds, num_s):
         start = end
     return groups
 
-def get_selected(paras, sec_paras, sents, kp, ks, mode):
+def get_selected(paras, combs, sents, kp, ks, mode):
     all_ps_vals, all_top_pouts, all_top_souts = [], [], []
-    for p, sec_p, s in zip(paras, sec_paras, sents):
-        pp_vals = [first + second for first, second in zip(p, sec_p)]
-        pp_vals = torch.stack(pp_vals)
-        indices = torch.triu_indices(len(pp_vals), len(pp_vals), 1, device=device)
-        pp_vals = pp_vals[indices[0, :], indices[1, :]]
-        top_pvals, top_pouts = torch.topk(pp_vals, k=kp) if len(pp_vals) > kp else torch.topk(pp_vals, k=len(pp_vals))
-        top_pouts = indices[:, top_pouts].T.cpu().tolist()
+    for p, c, s in zip(paras, combs, sents):
+        top_pvals, top_pouts = torch.topk(p, k=kp) if len(p) > kp else torch.topk(p, k=len(p))
+        top_pouts = c[top_pouts, :].cpu().tolist()
         ps_vals = []
         top_souts = []
-        for (i, j), val in zip(top_pouts, pp_vals):
+        for (i, j), val in zip(top_pouts, top_pvals):
             sent_val = s[i].repeat(len(s[j])).view(len(s[j]), -1)
             sent_val = (sent_val.T+s[j]).T
             sent_val = sent_val.view(-1)
@@ -259,9 +249,9 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
             batch[key] = batch[key].to(device)
     bs = len(batch["answers"])
     lm_outs = run_lm(layers[0], batch, train=train)
-    pouts, second_pouts = run_para_model(layers[1:3], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
+    pouts, combs = run_para_model(layers[1:3], lm_outs, layers[0].config.hidden_dropout_prob, batch["ds"], batch["ds2"], train=train)
     souts = run_sent_model(layers[3], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
-    para_sent, top_pouts, top_souts = get_selected(pouts, second_pouts, souts, topkp, topks, mode=mode)
+    para_sent, top_pouts, top_souts = get_selected(pouts, combs, souts, topkp, topks, mode=mode)
     answer_in, answer_attn, labels, indices = pad_answers(
             answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
     in_len = len(answer_in)
