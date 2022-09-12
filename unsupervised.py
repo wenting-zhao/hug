@@ -113,7 +113,7 @@ def run_para_model(layers, outputs, dropout_p, ds, ds2, train):
             embeddings.append(curr_pooled_output[l[0]:l[-1]+1].mean(dim=0))
         embeddings = torch.stack(embeddings)
         p_num = len(embeddings)
-        combs = torch.combinations(torch.arange(p_num)).to(device)
+        combs = torch.combinations(torch.arange(p_num, device=device))
         paired = embeddings[combs,:]
         diff = torch.abs(paired[:, 0] - paired[:, 1])
         pairs = torch.cat([paired.view(len(combs), -1), diff], dim=1)
