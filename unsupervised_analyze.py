@@ -107,8 +107,10 @@ def get_changes(d1, d2):
     for k2 in ks:
         for k1 in ks:
             overlap = d1[k1].intersection(d2[k2])
-            if k2 == "piac" or k2 == "piai" or k2 == "pcai":
+            #if k2 == "piac" or k2 == "piai" or k2 == "pcai":
+            if k1 == "piac" and k2 == "pcac":
                 for i in overlap:
+                    #pretty_print(questions[i], paragraphs[i], (pred_ans1[i], gold_ans[i]), gold_paras[i], pred_paras1[i])
                     pretty_print(questions[i], paragraphs[i], (pred_ans2[i], gold_ans[i]), gold_paras[i], pred_paras2[i])
             overlap = len(overlap)
             print(f"{k1} -> {k2}: {overlap}")
@@ -135,4 +137,17 @@ print("piai:", len(piai1)/len(pred_paras1), len(piai2)/len(pred_paras1))
 get_changes({"pcac": pcac1, "pcai": pcai1, "piac": piac1, "piai": piai1},
         {"pcac": pcac2, "pcai": pcai2, "piac": piac2, "piai": piai2})
 
+#new1 = [i for i in range(len(data["type"])) if data["type"][i] == "bridge"]
+#new2 = [i for i in range(len(data["type"])) if data["type"][i] == "comparison"]
+#new_para11 = [pred_paras1[i] for i in new1]
+#new_para12 = [pred_paras1[i] for i in new2]
+#new_para21 = [pred_paras2[i] for i in new1]
+#new_para22 = [pred_paras2[i] for i in new2]
+#gold_paras1 = [gold_paras[i] for i in new1]
+#gold_paras2 = [gold_paras[i] for i in new2]
+#print(update_sp(new_para11, gold_paras1))
+#print(update_sp(new_para12, gold_paras2))
+#print(update_sp(new_para21, gold_paras1))
+#print(update_sp(new_para22, gold_paras2))
+print(update_sp(pred_paras1, gold_paras))
 print(update_sp(pred_paras2, gold_paras))
