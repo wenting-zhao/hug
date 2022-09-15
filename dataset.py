@@ -661,3 +661,61 @@ class FeverDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.sent_labels)
+
+def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path="data/multirc/"):
+    print(f"prepare MultiRC {split}")
+    data = []
+    with open(f"{path}/{split}.jsonl", 'r') as fin:
+        for line in fin:
+            data.append(json.loads(line))
+    out = []
+    labels = []
+    sent_labels = []
+    counts_z = []
+    counts_gold = []
+    for d in data:
+        curr = dict()
+        curr['x'] = d['query']
+        d['evidences'] = [ee for e in d['evidences'] for ee in e]
+        docid = [l['docid'] for l in d['evidences']]
+        docid = set(docid)
+        assert len(docid) == 1
+        docid = docid.pop()
+        curr['z'] = docs[docid]
+        counts_z.append(len(curr['z']))
+        gold_z = [l['start_sentence'] for l in d['evidences']]
+        counts_gold.append(len(gold_z))
+        sent_labels.append(gold_z)
+        curr['y'] = d['classification'].lower()
+        label = 0 if curr['y'] == "supports" else 1
+        labels.append(label)
+        out.append(curr)
+    print(Counter(counts_z))
+    print(Counter(counts_gold))
+    fname = f"cache/fever_{split}.pkl"
+    if os.path.isfile(fname):
+        with open(fname, 'rb') as f:
+            sents, supps, answs, ds, num_s = pickle.load(f)
+    else:
+        sents, supps, answs, ds, num_s = preprocess_fever(out, tokenizer, answer_tokenizer, fixed, max_e)
+        with open(fname, 'wb') as f:
+            pickle.dump((sents, supps, answs, ds, num_s), f)
+    return (sents, supps, answs, ds, num_s, sent_labels, labels)
+
+class MultiRCDataset(torch.utils.data.Dataset):
+    def __init__(self, everything):
+        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.labels = everything
+
+    def __getitem__(self, idx):
+        item = dict()
+        item['sents'] = self.sents[idx]
+        item['supps'] = self.supps[idx]
+        item['answs'] = self.answs[idx]
+        item['ds'] = self.ds[idx]
+        item['num_s'] = self.num_s[idx]
+        item['sent_labels'] = self.sent_labels[idx]
+        item['labels'] = self.labels[idx]
+        return item
+
+    def __len__(self):
+        return len(self.sent_labels)

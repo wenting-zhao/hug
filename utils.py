@@ -173,3 +173,13 @@ def collect_fever_docs(doc_path="data/fever/docs/*"):
                 key = fname.split('/')[-1]
                 title2sents[key].append(line.strip())
     return title2sents
+
+def collect_multirc_docs(doc_path="data/multirc/docs/*"):
+    flist = glob(doc_path)
+    title2sents = defaultdict(list)
+    for fname in flist:
+        with open(fname, 'r') as f:
+            for line in f:
+                key = fname.split('/')[-1]
+                title2sents[key].append(line.strip())
+    return title2sents
