@@ -342,7 +342,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         })
     if args.save_results and split == "Valid":
         torch.save((para_results, gold_paras, answ_results), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
-    return eval_metric['exact_match']
+    return supp_f1
 
 def main():
     args = get_args()
@@ -392,6 +392,8 @@ def main():
                     best_valid = valid_acc
                     if args.save_model:
                         all_layers[0].save_pretrained(f"{args.output_model_dir}/{run_name}")
+                        torch.save(all_layers[1:], f"{args.output_model_dir}/{run_name}-others.pt")
+                        answer_model.save_pretrained(f"{args.output_model_dir}/{run_name}-answer")
                 all_layers[0].train()
                 answer_model.train()
             _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
