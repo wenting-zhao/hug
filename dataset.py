@@ -662,6 +662,49 @@ class FeverDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.sent_labels)
 
+def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
+    sents = []
+    supps = []
+    lengths = []
+    slengths = []
+    ds = []
+    num_s = []
+    for e in examples:
+        curr_sents = []
+        for i in range(0, len(e['z']), fixed):
+            sent = f'{tok.unk_token} ' + f' {tok.unk_token} '.join(e['z'][i:i+fixed])
+            sent = e['x'] + f' {tok.sep_token} ' + sent
+            curr_sents.append(sent)
+        lengths.append(len(curr_sents))
+        sents += curr_sents
+        z_len = len(e['z'])
+        rang = list(range(z_len))
+        curr_idxes = []
+        for i in range(1, max_e+1):
+            curr_idxes += list(combinations(rang, r=i))
+        for one in curr_idxes:
+            curr_supps = [e['z'][m] for m in one]
+            curr_supps = ' '.join(curr_supps)
+            curr_supps = e['x'] + f' {answ_tok.sep_token} ' + curr_supps
+            supps.append(curr_supps)
+        ds.append(curr_idxes)
+        slengths.append(len(curr_idxes))
+        num_s.append(z_len)
+    lengths = len_helper(lengths)
+    slengths = len_helper(slengths)
+    #tokenized_sents = tok(sents, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_sents = tok(sents, return_attention_mask=False)['input_ids']
+    for s in tokenized_sents:
+        if len(s) > 512:
+            print("WARNING")
+    tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
+    answers = [e['y'] for e in examples]
+    tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = [tokenized_supps[slengths[i]:slengths[i+1]] for i in range(len(slengths)-1)]
+    assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_sents)
+    return tokenized_sents, tokenized_supps, tokenized_answers, ds, num_s
+
 def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path="data/multirc/"):
     print(f"prepare MultiRC {split}")
     data = []
@@ -669,42 +712,40 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         for line in fin:
             data.append(json.loads(line))
     out = []
-    labels = []
     sent_labels = []
-    counts_z = []
-    counts_gold = []
+    groups = defaultdict(list)
     for d in data:
+        idx = d["annotation_id"].rfind(':')
+        key = d["annotation_id"][:idx].strip()
+        groups[key].append(d)
+    for _, values in groups.items():
+        answers = [d['query'].split('||')[-1] for d in values]
+        d = values[0]
         curr = dict()
-        curr['x'] = d['query']
+        curr['x'] = d['query'].split('||')[0]
         d['evidences'] = [ee for e in d['evidences'] for ee in e]
         docid = [l['docid'] for l in d['evidences']]
         docid = set(docid)
         assert len(docid) == 1
         docid = docid.pop()
         curr['z'] = docs[docid]
-        counts_z.append(len(curr['z']))
         gold_z = [l['start_sentence'] for l in d['evidences']]
-        counts_gold.append(len(gold_z))
         sent_labels.append(gold_z)
-        curr['y'] = d['classification'].lower()
-        label = 0 if curr['y'] == "supports" else 1
-        labels.append(label)
+        curr['y'] = f' {answer_tokenizer.sep_token}'.join(answers)
         out.append(curr)
-    print(Counter(counts_z))
-    print(Counter(counts_gold))
-    fname = f"cache/fever_{split}.pkl"
+    fname = f"cache/multirc_{split}.pkl"
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
             sents, supps, answs, ds, num_s = pickle.load(f)
     else:
-        sents, supps, answs, ds, num_s = preprocess_fever(out, tokenizer, answer_tokenizer, fixed, max_e)
+        sents, supps, answs, ds, num_s = preprocess_multirc(out, tokenizer, answer_tokenizer, fixed, max_e)
         with open(fname, 'wb') as f:
             pickle.dump((sents, supps, answs, ds, num_s), f)
-    return (sents, supps, answs, ds, num_s, sent_labels, labels)
+    return (sents, supps, answs, ds, num_s, sent_labels)
 
 class MultiRCDataset(torch.utils.data.Dataset):
     def __init__(self, everything):
-        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.labels = everything
+        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels = everything
 
     def __getitem__(self, idx):
         item = dict()
@@ -714,7 +755,6 @@ class MultiRCDataset(torch.utils.data.Dataset):
         item['ds'] = self.ds[idx]
         item['num_s'] = self.num_s[idx]
         item['sent_labels'] = self.sent_labels[idx]
-        item['labels'] = self.labels[idx]
         return item
 
     def __len__(self):
