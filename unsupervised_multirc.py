@@ -249,6 +249,9 @@ def main():
     model, linear = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
     answer_model = answer_model.to(device)
+    if args.gradient_checkpoint:
+        all_layers[0].gradient_checkpointing_enable()
+        answer_model.gradient_checkpointing_enable()
 
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     args.max_train_steps = args.epoch * num_update_steps_per_epoch

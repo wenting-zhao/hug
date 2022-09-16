@@ -49,6 +49,7 @@ def get_args():
     parser.add_argument('--save_results', action='store_true')
     parser.add_argument('--max_p', action='store_true')
     parser.add_argument('--sentence', action='store_true')
+    parser.add_argument('--gradient_checkpoint', '-gc', action='store_true')
     parser.add_argument('--truncate_paragraph', '-tp', default=0, type=int)
     parser.add_argument('--reg_coeff', default=0, type=float)
     parser.add_argument('--k_distractor', default=1, type=int)
