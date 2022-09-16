@@ -98,7 +98,7 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, num_s, s_maps):
         curr_indices = indices[start:end]
         curr_lm_outs = lm_outs[start:end]
         out = []
-        for i in range(1, len(s_map)):
+        for i in range(len(s_map)):
             this_idxes = s_map[i]
             this_idxes = torch.tensor(this_idxes)
             this_combs = curr_lm_outs[this_idxes]
@@ -175,7 +175,7 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
         answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
         answ_out = process_answ(answ_out, souts)
         loss = 0.
-        for l, ps in zip(answ_out, outs):
+        for l, ps in zip(answ_out, vals):
             l = l + ps
             l = torch.logsumexp(l, dim=-1)
             loss -= l.mean()
