@@ -714,6 +714,7 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
     out = []
     sent_labels = []
     groups = defaultdict(list)
+    counts = []
     for d in data:
         idx = d["annotation_id"].rfind(':')
         key = d["annotation_id"][:idx].strip()
@@ -733,6 +734,7 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         sent_labels.append(gold_z)
         curr['y'] = f' {answer_tokenizer.sep_token}'.join(answers)
         out.append(curr)
+        counts.append(len(values))
     fname = f"cache/multirc_{split}.pkl"
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
@@ -741,11 +743,11 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         sents, supps, answs, ds, num_s = preprocess_multirc(out, tokenizer, answer_tokenizer, fixed, max_e)
         with open(fname, 'wb') as f:
             pickle.dump((sents, supps, answs, ds, num_s), f)
-    return (sents, supps, answs, ds, num_s, sent_labels)
+    return (sents, supps, answs, ds, num_s, sent_labels, counts)
 
 class MultiRCDataset(torch.utils.data.Dataset):
     def __init__(self, everything):
-        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels = everything
+        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.counts = everything
 
     def __getitem__(self, idx):
         item = dict()
@@ -755,6 +757,7 @@ class MultiRCDataset(torch.utils.data.Dataset):
         item['ds'] = self.ds[idx]
         item['num_s'] = self.num_s[idx]
         item['sent_labels'] = self.sent_labels[idx]
+        item['counts'] = self.counts[idx]
         return item
 
     def __len__(self):

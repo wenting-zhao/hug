@@ -53,6 +53,8 @@ class DataCollatorForMultipleChoice:
         slabels = [feature.pop(slabel_name) for feature in features]
         sent_name = "num_s"
         num_s = [feature.pop(sent_name) for feature in features]
+        count_name = "counts"
+        counts = [feature.pop(count_name) for feature in features]
 
         # Add back labels
         batch['contexts'] = contexts
@@ -61,6 +63,7 @@ class DataCollatorForMultipleChoice:
         batch['sent_labels'] = slabels
         batch['lengths'] = lengths
         batch['num_s'] = num_s
+        batch['counts'] = counts
         return batch
 
 def prepare_dataloader(tok, answ_tok, args):
@@ -184,9 +187,9 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     else:
         return souts
 
-def update_sp(preds, golds):
+def update_sp(preds, golds, counts):
     sp_em, sp_f1 = 0, 0
-    for cur_sp_pred, gold_sp_pred in zip(preds, golds):
+    for cur_sp_pred, gold_sp_pred, cnt in zip(preds, golds, counts):
         tp, fp, fn = 0, 0, 0
         for e in cur_sp_pred:
             if e in gold_sp_pred:
@@ -200,15 +203,19 @@ def update_sp(preds, golds):
         recall = 1.0 * tp / (tp + fn) if tp + fn > 0 else 0.0
         f1 = 2 * prec * recall / (prec + recall) if prec + recall > 0 else 0.0
         em = 1.0 if fp + fn == 0 else 0.0
+        f1 = f1 * cnt
+        em = em * cnt
         sp_em += em
         sp_f1 += f1
-    sp_em /= len(preds)
-    sp_f1 /= len(preds)
+    total = sum(counts)
+    sp_em /= total
+    sp_f1 /= total
     return sp_em, sp_f1
 
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
     sent_results = []
     gold_sents = []
+    counts = []
     for step, eval_batch in enumerate(dataloader):
         sent_outs = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=args.topks, train=False)
         sent_preds = []
@@ -218,7 +225,8 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
             sent_preds.append(sent_pred)
         sent_results += sent_preds
         gold_sents += eval_batch['sent_labels']
-    supp_em, supp_f1 = update_sp(sent_results, gold_sents)
+        counts += eval_batch['counts']
+    supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
     if not args.nolog:
         wandb.log({
             "step": steps,
