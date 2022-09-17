@@ -122,7 +122,7 @@ def get_selected(sents, ks, mode):
             top_vals, top_outs = torch.topk(s, k=ks) if len(s) > ks else torch.topk(s, k=len(s))
         elif mode == "sample":
             top_outs = torch.from_numpy(np.random.choice(range(len(s)), ks, replace=False)) if len(s) > ks else torch.arange(len(s))
-            top_vals = p[top_outs]
+            top_vals = s[top_outs]
         all_vals.append(top_vals)
         all_outs.append(top_outs)
     return all_vals, all_outs
