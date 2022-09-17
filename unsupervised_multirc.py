@@ -17,6 +17,7 @@ from torch.optim import AdamW
 from torch import nn
 from utils import get_args, mean_pooling, padding, normalize_answer
 from utils import prepare_linear, prepare_optim_and_scheduler, padding, collect_multirc_docs
+import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -114,10 +115,14 @@ def run_sent_model(linear, tok, input_ids, lm_outputs, num_s, s_maps):
         start = end
     return groups
 
-def get_selected(sents, ks):
+def get_selected(sents, ks, mode):
     all_vals, all_outs = [], []
     for s in sents:
-        top_vals, top_outs = torch.topk(s, k=ks) if len(s) > ks else torch.topk(s, k=len(s))
+        if mode == "topk":
+            top_vals, top_outs = torch.topk(s, k=ks) if len(s) > ks else torch.topk(s, k=len(s))
+        elif mode == "sample":
+            top_outs = torch.from_numpy(np.random.choice(range(len(s)), ks, replace=False)) if len(s) > ks else torch.arange(len(s))
+            top_vals = p[top_outs]
         all_vals.append(top_vals)
         all_outs.append(top_outs)
     return all_vals, all_outs
@@ -164,7 +169,7 @@ def process_answ(answ, ps_out):
         start = end
     return outs
 
-def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, ks, train=True):
+def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, ks, mode="topk", train=True):
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
@@ -172,7 +177,7 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     lm_outs = run_lm(model, batch, train=train)
     souts = run_sent_model(linear, tokenizer, batch["input_ids"], lm_outs, batch['num_s'], batch['s_maps'])
     if train:
-        vals, outs = get_selected(souts, ks)
+        vals, outs = get_selected(souts, ks, mode)
         answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['answers'], outs)
         in_len = len(answer_in)
         answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
@@ -244,7 +249,7 @@ def main():
     train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} topk-{args.topks}'
+    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} mode-{args.mode} topk-{args.topks}'
     args.run_name = run_name
     model, linear = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
@@ -292,7 +297,7 @@ def main():
                         model.save_pretrained(f"{args.output_model_dir}/{run_name}")
                 model.train()
                 answer_model.train()
-            _, _, loss = run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, args.topks)
+            _, _, loss = run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, args.topks, mode=args.mode)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
