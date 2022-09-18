@@ -133,19 +133,19 @@ def prepare_optim_and_scheduler(all_layers, args):
     return optim, lr_scheduler
 
 def prepare_linear(size):
-    linear = nn.Linear(size, 1)
+    linear = nn.Linear(size, 1, dtype=torch.float16)
     linear = linear.to(device)
     return linear
 
 def prepare_mlp(size):
     mlp = nn.Sequential(
-            nn.Linear(size, 512),
+            nn.Linear(size, 512, dtype=torch.float16),
             nn.ReLU(),
-            nn.Linear(512, 1024),
+            nn.Linear(512, 1024, dtype=torch.float16),
             nn.ReLU(),
-            nn.Linear(1024, 512),
+            nn.Linear(1024, 512, dtype=torch.float16),
             nn.ReLU(),
-            nn.Linear(512, 1)
+            nn.Linear(512, 1, dtype=torch.float16)
             )
     mlp = mlp.to(device)
     return mlp

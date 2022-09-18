@@ -71,7 +71,7 @@ class DataCollatorForMultipleChoice:
         return batch
 
 def prepare_model(args):
-    model = AutoModel.from_pretrained(args.model_dir)
+    model = AutoModel.from_pretrained(args.model_dir, torch_dtype=torch.float16)
     model = model.to(device)
     linear1 = prepare_linear(model.config.hidden_size)
     linear2 = prepare_linear(model.config.hidden_size)
@@ -355,7 +355,7 @@ def main():
     run_name=f'newtopk model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks}'
     args.run_name = run_name
     all_layers = prepare_model(args)
-    answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
+    answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir, torch_dtype=torch.float16)
     answer_model = answer_model.to(device)
     if args.gradient_checkpoint:
         all_layers[0].gradient_checkpointing_enable()
