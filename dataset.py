@@ -720,7 +720,7 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         key = d["annotation_id"][:idx].strip()
         groups[key].append(d)
     for _, values in groups.items():
-        answers = [d['query'].split('||')[-1] for d in values]
+        answers = [d['query'].split('||')[-1] for d in values if d['classification'] == 'True']
         d = values[0]
         curr = dict()
         curr['x'] = d['query'].split('||')[0]
