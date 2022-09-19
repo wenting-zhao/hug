@@ -603,12 +603,10 @@ def preprocess_fever(examples, tok, answ_tok, fixed, max_e):
     # there is one example that has a length 529, might cause an error
     tokenized_sents = tok(sents, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
-    answers = [e['y'] for e in examples]
-    tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_supps = [tokenized_supps[slengths[i]:slengths[i+1]] for i in range(len(slengths)-1)]
-    assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_sents)
-    return tokenized_sents, tokenized_supps, tokenized_answers, ds, num_s
+    assert len(tokenized_supps) == len(tokenized_sents)
+    return tokenized_sents, tokenized_supps, ds, num_s
 
 def prepare_fever(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path="data/fever/"):
     print(f"prepare fever {split}")
@@ -630,29 +628,27 @@ def prepare_fever(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path="
         curr['z'] = docs[docid]
         gold_z = [l['start_sentence'] for l in d['evidences']]
         sent_labels.append(gold_z)
-        curr['y'] = d['classification'].lower()
-        label = 0 if curr['y'] == "supports" else 1
+        label = 0 if d['classification'].lower() == "supports" else 1
         labels.append(label)
         out.append(curr)
-    fname = f"cache/fever_{split}.pkl"
+    fname = f"cache/fever_nobart_{split}.pkl"
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
-            sents, supps, answs, ds, num_s = pickle.load(f)
+            sents, supps, ds, num_s = pickle.load(f)
     else:
-        sents, supps, answs, ds, num_s = preprocess_fever(out, tokenizer, answer_tokenizer, fixed, max_e)
+        sents, supps, ds, num_s = preprocess_fever(out, tokenizer, answer_tokenizer, fixed, max_e)
         with open(fname, 'wb') as f:
-            pickle.dump((sents, supps, answs, ds, num_s), f)
-    return (sents, supps, answs, ds, num_s, sent_labels, labels)
+            pickle.dump((sents, supps, ds, num_s), f)
+    return (sents, supps, ds, num_s, sent_labels, labels)
 
 class FeverDataset(torch.utils.data.Dataset):
     def __init__(self, everything):
-        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.labels = everything
+        self.sents, self.supps, self.ds, self.num_s, self.sent_labels, self.labels = everything
 
     def __getitem__(self, idx):
         item = dict()
         item['sents'] = self.sents[idx]
         item['supps'] = self.supps[idx]
-        item['answs'] = self.answs[idx]
         item['ds'] = self.ds[idx]
         item['num_s'] = self.num_s[idx]
         item['sent_labels'] = self.sent_labels[idx]

@@ -6,7 +6,7 @@ from tqdm import tqdm
 import wandb
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from dataset import prepare_fever, FeverDataset
-from transformers import AutoModel, AutoModelForSeq2SeqLM
+from transformers import AutoModel, AutoModelForSequenceClassification
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from transformers import get_scheduler, set_seed
 from transformers.file_utils import PaddingStrategy
@@ -43,8 +43,6 @@ class DataCollatorForMultipleChoice:
             return_tensors="pt",
         )
 
-        answer_name = "answs"
-        raw_answers = [feature.pop(answer_name) for feature in features]
         context_name = "supps"
         contexts = [feature.pop(context_name) for feature in features]
         ds_name = "ds"
@@ -58,7 +56,6 @@ class DataCollatorForMultipleChoice:
 
         # Add back labels
         batch['contexts'] = contexts
-        batch['answers'] = raw_answers
         batch['s_maps'] = ds
         batch['sent_labels'] = slabels
         batch['labels'] = labels
@@ -125,25 +122,20 @@ def pad_answers(tokenizer, contexts, raw_answers):
     )
     raw_answers = [[a] * l for a, l in zip(raw_answers, lens)]
     raw_answers = [a for ans in raw_answers for a in ans]
-    raw_answers = [{"input_ids": a} for a in raw_answers]
-    answers = tokenizer.pad(
-        raw_answers,
-        padding='longest',
-        return_tensors="pt",
-        return_attention_mask=False,
-    )['input_ids']
-    return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
+    answers = torch.tensor(raw_answers, device=device)
+    return out['input_ids'].to(device), out['attention_mask'].to(device), answers
 
-def run_answer_model(model, input_ids, attn_mask, answs, tokenizer):
-    answs[answs==model.config.pad_token_id] = -100
-    outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
-    outputs = outputs.view(input_ids.size(0), -1).sum(dim=-1)
-    return -outputs
+def run_answer_model(model, input_ids, attn_mask, answs, train):
+    m = nn.LogSoftmax(dim=-1)
+    logits = model(input_ids=input_ids, attention_mask=attn_mask).logits
+    normalized = m(logits)
+    if train:
+        normalized = normalized[torch.arange(len(normalized), device=device), answs]
+    return normalized
 
 def process_answ(answ, ps_out):
     start, end = 0, 0
     outs = []
-    text_outs = []
     for curr in ps_out:
         end += len(curr)
         out = answ[start:end]
@@ -155,23 +147,21 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, t
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
-    bs = len(batch["answers"])
+    bs = len(batch["labels"])
     lm_outs = run_lm(model, batch, train=train)
     souts = run_sent_model(linear, tokenizer, batch["input_ids"], lm_outs, batch['num_s'], batch['s_maps'])
+    answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['labels'])
+    in_len = len(answer_in)
+    answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, train=train)
+    answ_out = process_answ(answ_out, souts)
+    loss = 0.
     if train:
-        answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['answers'])
-        in_len = len(answer_in)
-        answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer)
-        answ_out = process_answ(answ_out, souts)
-        loss = 0.
         for l, ps in zip(answ_out, souts):
             l = l + ps
             l = torch.logsumexp(l, dim=-1)
             loss -= l.mean()
         loss /= bs
-        return answ_out, souts, loss
-    else:
-        return souts
+    return answ_out, souts, loss
 
 def update_sp(preds, golds):
     sp_em, sp_f1 = 0, 0
@@ -196,10 +186,14 @@ def update_sp(preds, golds):
     return sp_em, sp_f1
 
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
+    metric = load_metric("accuracy")
     sent_results = []
     gold_sents = []
+    if args.save_results and split == "Valid":
+        answ_results = []
+        gold_answ = []
     for step, eval_batch in enumerate(dataloader):
-        sent_outs = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, train=False)
+        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, train=False)
         sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
             sent_pred = sent_out.argmax(dim=-1).item()
@@ -208,16 +202,30 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
             sent_preds.append(sent_pred)
         sent_results += sent_preds
         gold_sents += eval_batch['sent_labels']
+        predictions = []
+        for eval_out, sent_pred in zip(eval_outs, sent_preds):
+            pred = eval_out[sent_pred].argmax(dim=-1)
+            predictions.append(pred.item())
+        metric.add_batch(
+            predictions=predictions,
+            references=eval_batch["labels"],
+        )
+        if args.save_results and split == "Valid":
+            answ_results += predictions
+            gold_answ += eval_batch["labels"]
+    eval_metric = metric.compute()
     supp_em, supp_f1 = update_sp(sent_results, gold_sents)
     if not args.nolog:
         wandb.log({
             "step": steps,
             f"{split} Supp F1": supp_f1,
             f"{split} Supp EM": supp_em,
+            f"{split} Answ EM": eval_metric,
         })
     if args.save_results and split == "Valid":
-        torch.save((sent_results, gold_sents), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
-    return supp_f1
+        torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
+    print(supp_em, supp_f1, eval_metric['accuracy'])
+    return eval_metric['accuracy']
 
 def main():
     args = get_args()
@@ -226,10 +234,10 @@ def main():
     train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} max_e_len-{args.max_e_len}'
+    run_name=f'nobart model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} max_e_len-{args.max_e_len}'
     args.run_name = run_name
     model, linear = prepare_model(args)
-    answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
+    answer_model = AutoModelForSequenceClassification.from_pretrained(args.answer_model_dir, num_labels=2)
     answer_model = answer_model.to(device)
     if args.gradient_checkpoint:
         model.gradient_checkpointing_enable()
