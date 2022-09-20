@@ -73,9 +73,12 @@ class DataCollatorForMultipleChoice:
 def prepare_model(args):
     model = AutoModel.from_pretrained(args.model_dir)
     model = model.to(device)
-    linear1 = prepare_linear(model.config.hidden_size)
-    linear2 = prepare_linear(model.config.hidden_size)
-    mlp = prepare_mlp(model.config.hidden_size*3)
+    if args.checkpoint != "":
+        linear1, mlp, linear2 = torch.load(args.checkpoint)
+    else:
+        linear1 = prepare_linear(model.config.hidden_size)
+        linear2 = prepare_linear(model.config.hidden_size)
+        mlp = prepare_mlp(model.config.hidden_size*3)
     return [model, linear1, mlp, linear2]
 
 def prepare_dataloader(data, tok, answer_tok, args):
