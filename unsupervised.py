@@ -71,14 +71,15 @@ class DataCollatorForMultipleChoice:
         return batch
 
 def prepare_model(args):
-    model = AutoModel.from_pretrained(args.model_dir)
-    model = model.to(device)
     if args.checkpoint != "":
-        linear1, mlp, linear2 = torch.load(args.checkpoint)
+        model = AutoModel.from_pretrained(args.checkpoint)
+        linear1, mlp, linear2 = torch.load(f"{args.checkpoint}-others.pt")
     else:
+        model = AutoModel.from_pretrained(args.model_dir)
         linear1 = prepare_linear(model.config.hidden_size)
         linear2 = prepare_linear(model.config.hidden_size)
         mlp = prepare_mlp(model.config.hidden_size*3)
+    model = model.to(device)
     return [model, linear1, mlp, linear2]
 
 def prepare_dataloader(data, tok, answer_tok, args):
@@ -358,7 +359,10 @@ def main():
     run_name=f'newtopk model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks}'
     args.run_name = run_name
     all_layers = prepare_model(args)
-    answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
+    if args.checkpoint != "":
+        answer_model = AutoModelForSeq2SeqLM.from_pretrained(f"{args.checkpoint}-answer")
+    else:
+        answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
     answer_model = answer_model.to(device)
     if args.gradient_checkpoint:
         all_layers[0].gradient_checkpointing_enable()
