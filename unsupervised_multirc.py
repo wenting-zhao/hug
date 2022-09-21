@@ -192,7 +192,6 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
         loss -= l.mean()
     bs = len(vals)
     loss /= bs
-    print(loss.item())
     return answ_out, souts, loss
 
 def update_sp(preds, golds, counts):
@@ -252,7 +251,7 @@ def main():
     train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} mode-{args.mode} topk-{args.topks}'
+    run_name=f'nobart model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} mode-{args.mode} topk-{args.topks}'
     args.run_name = run_name
     model, linear = prepare_model(args)
     answer_model = AutoModel.from_pretrained(args.answer_model_dir)
