@@ -6,7 +6,7 @@ from tqdm import tqdm
 import wandb
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from dataset import prepare_multirc, MultiRCDataset
-from transformers import AutoModel, AutoModelForSeq2SeqLM
+from transformers import AutoModel
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from transformers import get_scheduler, set_seed
 from transformers.file_utils import PaddingStrategy
@@ -44,14 +44,14 @@ class DataCollatorForMultipleChoice:
             return_tensors="pt",
         )
 
-        answer_name = "answs"
-        raw_answers = [feature.pop(answer_name) for feature in features]
         context_name = "supps"
         contexts = [feature.pop(context_name) for feature in features]
         ds_name = "ds"
         ds = [feature.pop(ds_name) for feature in features]
         slabel_name = "sent_labels"
         slabels = [feature.pop(slabel_name) for feature in features]
+        label_name = "labels"
+        labels = [feature.pop(label_name) for feature in features]
         sent_name = "num_s"
         num_s = [feature.pop(sent_name) for feature in features]
         count_name = "counts"
@@ -59,9 +59,9 @@ class DataCollatorForMultipleChoice:
 
         # Add back labels
         batch['contexts'] = contexts
-        batch['answers'] = raw_answers
         batch['s_maps'] = ds
         batch['sent_labels'] = slabels
+        batch['labels'] = [torch.tensor(l, dtype=torch.long, device=device) for l in labels]
         batch['lengths'] = lengths
         batch['num_s'] = num_s
         batch['counts'] = counts
@@ -84,16 +84,21 @@ def prepare_model(args):
     model = AutoModel.from_pretrained(args.model_dir)
     model = model.to(device)
     linear = prepare_linear(model.config.hidden_size)
-    return model, linear
+    linear1 = prepare_linear(model.config.hidden_size)
+    linear2 = prepare_linear(model.config.hidden_size)
+    return model, [linear, linear1, linear2]
 
 def run_lm(model, batch, train):
     outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
     return outputs
 
-def run_sent_model(linear, tok, input_ids, lm_outputs, num_s, s_maps):
+def run_sent_model(linear, tok, input_ids, lm_outputs, num_s, s_maps, dropout_p, train):
     m = nn.LogSoftmax(dim=-1)
     indices = (input_ids == tok.unk_token_id).nonzero(as_tuple=False)
     lm_outs = lm_outputs[0][indices[:, 0], indices[:, 1]]
+    if train:
+        dropout = nn.Dropout(dropout_p)
+        lm_outs = dropout(lm_outs)
     assert sum(num_s) == lm_outs.size(0)
     groups = []
     start, end = 0, 0
@@ -127,7 +132,7 @@ def get_selected(sents, ks, mode):
         all_outs.append(top_outs)
     return all_vals, all_outs
 
-def pad_answers(tokenizer, contexts, raw_answers, topks):
+def pad_answers(tokenizer, contexts, topks):
     lens = []
     out_cs = []
     for cont, cur_topks in zip(contexts, topks):
@@ -141,56 +146,54 @@ def pad_answers(tokenizer, contexts, raw_answers, topks):
         padding='longest',
         return_tensors="pt",
     )
-    raw_answers = [[a] * l for a, l in zip(raw_answers, lens)]
-    raw_answers = [a for ans in raw_answers for a in ans]
-    raw_answers = [{"input_ids": a} for a in raw_answers]
-    answers = tokenizer.pad(
-        raw_answers,
-        padding='longest',
-        return_tensors="pt",
-        return_attention_mask=False,
-    )['input_ids']
-    return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
+    return out['input_ids'].to(device), out['attention_mask'].to(device)
 
-def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
-    answs[answs==model.config.pad_token_id] = -100
-    outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
-    outputs = outputs.view(input_ids.size(0), -1).sum(dim=-1)
-    return -outputs
+def run_answer_model(model, linear0, linear1, input_ids, attn_mask, answ_tok, train):
+    m = nn.LogSoftmax(dim=-1)
+    outputs = model(input_ids=input_ids, attention_mask=attn_mask)
+    indices = (input_ids == answ_tok.unk_token_id).nonzero(as_tuple=False)
+    outputs = outputs[0][indices[:, 0], indices[:, 1]]
+    if train:
+        dropout = nn.Dropout(model.config.hidden_dropout_prob)
+        outputs = dropout(outputs)
+    outs0 = linear0(outputs).view(-1, 1)
+    outs1 = linear1(outputs).view(-1, 1)
+    outs = torch.cat([outs0, outs1], dim=1)
+    outs = m(outs)
+    return outs
 
-def process_answ(answ, ps_out):
+def process_answ(answ, ps_out, labels):
     start, end = 0, 0
     outs = []
-    text_outs = []
-    for curr in ps_out:
-        end += len(curr)
-        out = answ[start:end]
+    for curr, l in zip(ps_out, labels):
+        end += len(curr) * len(l)
+        out = answ[start:end].view(-1, len(l), 2)
+        out = out[:, torch.arange(len(l), device=device), l]
+        out = torch.sum(out, dim=-1)
         outs.append(out)
         start = end
     return outs
 
 def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, ks, mode="topk", train=True):
+    sent_linear, ans_linear0, ans_linear1 = linear
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
-    bs = len(batch["answers"])
     lm_outs = run_lm(model, batch, train=train)
-    souts = run_sent_model(linear, tokenizer, batch["input_ids"], lm_outs, batch['num_s'], batch['s_maps'])
-    if train:
-        vals, outs = get_selected(souts, ks, mode)
-        answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['answers'], outs)
-        in_len = len(answer_in)
-        answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
-        answ_out = process_answ(answ_out, souts)
-        loss = 0.
-        for l, ps in zip(answ_out, vals):
-            l = l + ps
-            l = torch.logsumexp(l, dim=-1)
-            loss -= l.mean()
-        loss /= bs
-        return answ_out, souts, loss
-    else:
-        return souts
+    souts = run_sent_model(sent_linear, tokenizer, batch["input_ids"], lm_outs, batch['num_s'], batch['s_maps'], model.config.hidden_dropout_prob, train)
+    vals, outs = get_selected(souts, ks, mode)
+    answer_in, answer_attn = pad_answers(answer_tokenizer, batch["contexts"], outs)
+    answ_out = run_answer_model(answer_model, ans_linear0, ans_linear1, answer_in, answer_attn, answer_tokenizer, train=train)
+    answ_out = process_answ(answ_out, outs, batch["labels"])
+    loss = 0.
+    for l, ps in zip(answ_out, vals):
+        l = l + ps
+        l = torch.logsumexp(l, dim=-1)
+        loss -= l.mean()
+    bs = len(vals)
+    loss /= bs
+    print(loss.item())
+    return answ_out, souts, loss
 
 def update_sp(preds, golds, counts):
     sp_em, sp_f1 = 0, 0
@@ -252,7 +255,7 @@ def main():
     run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} mode-{args.mode} topk-{args.topks}'
     args.run_name = run_name
     model, linear = prepare_model(args)
-    answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
+    answer_model = AutoModel.from_pretrained(args.answer_model_dir)
     answer_model = answer_model.to(device)
     if args.gradient_checkpoint:
         model.gradient_checkpointing_enable()
@@ -261,7 +264,7 @@ def main():
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     args.max_train_steps = args.epoch * num_update_steps_per_epoch
     total_batch_size = args.batch_size * args.gradient_accumulation_steps
-    optim, lr_scheduler = prepare_optim_and_scheduler([model, linear, answer_model], args)
+    optim, lr_scheduler = prepare_optim_and_scheduler(linear+[model, answer_model], args)
 
     progress_bar = tqdm(range(args.max_train_steps))
     completed_steps = 0
