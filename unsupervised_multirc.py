@@ -181,7 +181,7 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
         answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['answers'], outs)
         in_len = len(answer_in)
         answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
-        answ_out = process_answ(answ_out, souts)
+        answ_out = process_answ(answ_out, outs)
         loss = 0.
         for l, ps in zip(answ_out, vals):
             l = l + ps
