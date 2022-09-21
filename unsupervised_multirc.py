@@ -162,14 +162,15 @@ def run_answer_model(model, linear0, linear1, input_ids, attn_mask, answ_tok, tr
     outs = m(outs)
     return outs
 
-def process_answ(answ, ps_out, labels):
+def process_answ(answ, ps_out, labels, train):
     start, end = 0, 0
     outs = []
     for curr, l in zip(ps_out, labels):
         end += len(curr) * len(l)
         out = answ[start:end].view(-1, len(l), 2)
-        out = out[:, torch.arange(len(l), device=device), l]
-        out = torch.sum(out, dim=-1)
+        if train:
+            out = out[:, torch.arange(len(l), device=device), l]
+            out = torch.sum(out, dim=-1)
         outs.append(out)
         start = end
     return outs
@@ -184,14 +185,15 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     vals, outs = get_selected(souts, ks, mode)
     answer_in, answer_attn = pad_answers(answer_tokenizer, batch["contexts"], outs)
     answ_out = run_answer_model(answer_model, ans_linear0, ans_linear1, answer_in, answer_attn, answer_tokenizer, train=train)
-    answ_out = process_answ(answ_out, outs, batch["labels"])
+    answ_out = process_answ(answ_out, outs, batch["labels"], train)
     loss = 0.
-    for l, ps in zip(answ_out, vals):
-        l = l + ps
-        l = torch.logsumexp(l, dim=-1)
-        loss -= l.mean()
-    bs = len(vals)
-    loss /= bs
+    if train:
+        for l, ps in zip(answ_out, vals):
+            l = l + ps
+            l = torch.logsumexp(l, dim=-1)
+            loss -= l.mean()
+        bs = len(vals)
+        loss /= bs
     return answ_out, souts, loss
 
 def update_sp(preds, golds, counts):
@@ -220,11 +222,15 @@ def update_sp(preds, golds, counts):
     return sp_em, sp_f1
 
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
+    metric = load_metric("accuracy")
     sent_results = []
     gold_sents = []
     counts = []
+    if args.save_results and split == "Valid":
+        answ_results = []
+        gold_answ = []
     for step, eval_batch in enumerate(dataloader):
-        sent_outs = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=args.topks, train=False)
+        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=args.topks, train=False)
         sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
             sent_pred = sent_out.argmax(dim=-1).item()
@@ -233,16 +239,31 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         sent_results += sent_preds
         gold_sents += eval_batch['sent_labels']
         counts += eval_batch['counts']
+        predictions = []
+        for eval_out, sent_pred in zip(eval_outs, sent_preds):
+            pred = eval_out[sent_pred].argmax(dim=-1)
+            predictions += pred.cpu().tolist()
+        labels = [ll for l in eval_batch["labels"] for ll in l.cpu().tolist()]
+        metric.add_batch(
+            predictions=predictions,
+            references=labels,
+        )
+        if args.save_results and split == "Valid":
+            answ_results += predictions
+            gold_answ += eval_batch["labels"]
+    eval_metric = metric.compute()
     supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
     if not args.nolog:
         wandb.log({
             "step": steps,
             f"{split} Supp F1": supp_f1,
-            f"{split} Supp EM": supp_em
+            f"{split} Supp EM": supp_em,
+            f"{split} Answ EM": eval_metric,
         })
+    print(supp_f1, supp_em, eval_metric)
     if args.save_results and split == "Valid":
         torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
-    return supp_f1
+    return eval_metric['accuracy']
 
 def main():
     args = get_args()
