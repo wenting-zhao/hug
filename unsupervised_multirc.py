@@ -194,7 +194,7 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
             loss -= l.mean()
         bs = len(vals)
         loss /= bs
-    return answ_out, souts, loss
+    return answ_out, outs, loss
 
 def update_sp(preds, golds, counts):
     sp_em, sp_f1 = 0, 0
@@ -233,7 +233,7 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=args.topks, train=False)
         sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
-            sent_pred = sent_out.argmax(dim=-1).item()
+            sent_pred = sent_out[0].item()
             sent_pred = s_map[sent_pred]
             sent_preds.append(sent_pred)
         sent_results += sent_preds
@@ -241,7 +241,7 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         counts += eval_batch['counts']
         predictions = []
         for eval_out, sent_pred in zip(eval_outs, sent_preds):
-            pred = eval_out[sent_pred].argmax(dim=-1)
+            pred = eval_out[0].argmax(dim=-1)
             predictions += pred.cpu().tolist()
         labels = [ll for l in eval_batch["labels"] for ll in l.cpu().tolist()]
         metric.add_batch(
