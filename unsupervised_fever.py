@@ -134,10 +134,21 @@ def pad_answers(tokenizer, contexts, raw_answers):
     )['input_ids']
     return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
 
-def run_answer_model(model, input_ids, attn_mask, answs, tokenizer):
+def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
     answs[answs==model.config.pad_token_id] = -100
-    outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
-    outputs = outputs.view(input_ids.size(0), -1).sum(dim=-1)
+    if train:
+        outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
+        outputs = outputs.view(input_ids.size(0), -1).sum(dim=-1)
+    else:
+        answs = tokenizer("supports", return_tensors="pt", return_attention_mask=False)['input_ids'].to(device)
+        answs = answs.repeat(input_ids.size(0), 1)
+        output1 = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
+        output1 = output1.view(input_ids.size(0), -1).sum(dim=-1).view(-1, 1)
+        answs = tokenizer("refutes", return_tensors="pt", return_attention_mask=False)['input_ids'].to(device)
+        answs = answs.repeat(input_ids.size(0), 1)
+        output2 = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
+        output2 = output2.view(input_ids.size(0), -1).sum(dim=-1).view(-1, 1)
+        outputs = torch.cat([output1, output2], dim=1)
     return -outputs
 
 def process_answ(answ, ps_out):
@@ -158,20 +169,18 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, t
     bs = len(batch["answers"])
     lm_outs = run_lm(model, batch, train=train)
     souts = run_sent_model(linear, tokenizer, batch["input_ids"], lm_outs, batch['num_s'], batch['s_maps'])
+    answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['answers'])
+    in_len = len(answer_in)
+    answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
+    answ_out = process_answ(answ_out, souts)
+    loss = 0.
     if train:
-        answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['answers'])
-        in_len = len(answer_in)
-        answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer)
-        answ_out = process_answ(answ_out, souts)
-        loss = 0.
         for l, ps in zip(answ_out, souts):
             l = l + ps
             l = torch.logsumexp(l, dim=-1)
             loss -= l.mean()
-        loss /= bs
-        return answ_out, souts, loss
-    else:
-        return souts
+    loss /= bs
+    return answ_out, souts, loss
 
 def update_sp(preds, golds):
     sp_em, sp_f1 = 0, 0
@@ -196,28 +205,43 @@ def update_sp(preds, golds):
     return sp_em, sp_f1
 
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
+    metric = load_metric("accuracy")
     sent_results = []
     gold_sents = []
+    answ_results = []
+    gold_answ = []
     for step, eval_batch in enumerate(dataloader):
-        sent_outs = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, train=False)
+        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, train=False)
         sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
             sent_pred = sent_out.argmax(dim=-1).item()
             flattened = [sm for sms in s_map for sm in sms]
             sent_pred = flattened[sent_pred]
             sent_preds.append(sent_pred)
+        predictions = []
+        for eval_out, sent_pred in zip(eval_outs, sent_preds):
+            pred = eval_out[sent_pred].argmax(dim=-1)
+            predictions.append(pred.item())
+        metric.add_batch(
+            predictions=predictions,
+            references=eval_batch["labels"],
+        )
         sent_results += sent_preds
         gold_sents += eval_batch['sent_labels']
+        answ_results += predictions
+        gold_answ += eval_batch["labels"]
+    eval_metric = metric.compute()
     supp_em, supp_f1 = update_sp(sent_results, gold_sents)
     if not args.nolog:
         wandb.log({
             "step": steps,
             f"{split} Supp F1": supp_f1,
             f"{split} Supp EM": supp_em,
+            f"{split} Answ EM": eval_metric,
         })
     if args.save_results and split == "Valid":
-        torch.save((sent_results, gold_sents), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
-    return supp_f1
+        torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
+    return eval_metric['accuracy']
 
 def main():
     args = get_args()
