@@ -260,7 +260,6 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
             f"{split} Supp EM": supp_em,
             f"{split} Answ EM": eval_metric,
         })
-    print(supp_f1, supp_em, eval_metric)
     if args.save_results and split == "Valid":
         torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
     return eval_metric['accuracy']
