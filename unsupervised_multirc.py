@@ -52,6 +52,8 @@ class DataCollatorForMultipleChoice:
         ds = [feature.pop(ds_name) for feature in features]
         slabel_name = "sent_labels"
         slabels = [feature.pop(slabel_name) for feature in features]
+        label_name = "labels"
+        labels = [feature.pop(label_name) for feature in features]
         sent_name = "num_s"
         num_s = [feature.pop(sent_name) for feature in features]
         count_name = "counts"
@@ -62,6 +64,7 @@ class DataCollatorForMultipleChoice:
         batch['answers'] = raw_answers
         batch['s_maps'] = ds
         batch['sent_labels'] = slabels
+        batch['labels'] = labels
         batch['lengths'] = lengths
         batch['num_s'] = num_s
         batch['counts'] = counts
@@ -127,7 +130,7 @@ def get_selected(sents, ks, mode):
         all_outs.append(top_outs)
     return all_vals, all_outs
 
-def pad_answers(tokenizer, contexts, raw_answers, topks):
+def pad_answers(tokenizer, contexts, raw_answers, topks, labels, train):
     lens = []
     out_cs = []
     for cont, cur_topks in zip(contexts, topks):
@@ -135,14 +138,20 @@ def pad_answers(tokenizer, contexts, raw_answers, topks):
         out_cs += curr
         l = len(curr)
         lens.append(l)
+    if not train:
+        assert len(labels) == len(out_cs)
+        out_cs = [[cont] * len(l) * 2 for l, cont in zip(labels, out_cs)]
+        out_cs = [cc for c in out_cs for cc in c]
+    else:
+        raw_answers = [[a] * l for a, l in zip(raw_answers, lens)]
+    raw_answers = [a for ans in raw_answers for a in ans]
+
     out_cs = [{"input_ids": c} for c in out_cs]
     out = tokenizer.pad(
         out_cs,
         padding='longest',
         return_tensors="pt",
     )
-    raw_answers = [[a] * l for a, l in zip(raw_answers, lens)]
-    raw_answers = [a for ans in raw_answers for a in ans]
     raw_answers = [{"input_ids": a} for a in raw_answers]
     answers = tokenizer.pad(
         raw_answers,
@@ -158,12 +167,14 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
     outputs = outputs.view(input_ids.size(0), -1).sum(dim=-1)
     return -outputs
 
-def process_answ(answ, ps_out):
+def process_answ(answ, ps_out, train):
     start, end = 0, 0
     outs = []
-    text_outs = []
     for curr in ps_out:
-        end += len(curr)
+        if train:
+            end += len(curr)
+        else:
+            end += len(curr) * 2
         out = answ[start:end]
         outs.append(out)
         start = end
@@ -176,21 +187,19 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     bs = len(batch["answers"])
     lm_outs = run_lm(model, batch, train=train)
     souts = run_sent_model(linear, tokenizer, batch["input_ids"], lm_outs, batch['num_s'], batch['s_maps'])
-    if train:
-        vals, outs = get_selected(souts, ks, mode)
-        answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['answers'], outs)
-        in_len = len(answer_in)
-        answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train=train)
-        answ_out = process_answ(answ_out, outs)
-        loss = 0.
-        for l, ps in zip(answ_out, vals):
-            l = l + ps
-            l = torch.logsumexp(l, dim=-1)
-            loss -= l.mean()
-        loss /= bs
-        return answ_out, souts, loss
-    else:
-        return souts
+    vals, outs = get_selected(souts, ks, mode)
+    answer_in, answer_attn, labels = pad_answers(answer_tokenizer, batch["contexts"], batch['answers'], outs, batch['labels'], train)
+    in_len = len(answer_in)
+    answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train)
+    passed = outs if train else batch['labels']
+    answ_out = process_answ(answ_out, passed, train)
+    loss = 0.
+    for l, ps in zip(answ_out, vals):
+        l = l + ps
+        l = torch.logsumexp(l, dim=-1)
+        loss -= l.mean()
+    loss /= bs
+    return answ_out, outs, loss
 
 def update_sp(preds, golds, counts):
     sp_em, sp_f1 = 0, 0
@@ -218,29 +227,47 @@ def update_sp(preds, golds, counts):
     return sp_em, sp_f1
 
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
+    metric = load_metric("accuracy")
     sent_results = []
     gold_sents = []
     counts = []
+    answ_results = []
+    gold_answ = []
     for step, eval_batch in enumerate(dataloader):
-        sent_outs = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=args.topks, train=False)
+        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=1, train=False)
         sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
-            sent_pred = sent_out.argmax(dim=-1).item()
+            sent_pred = sent_out.item()
             sent_pred = s_map[sent_pred]
             sent_preds.append(sent_pred)
         sent_results += sent_preds
         gold_sents += eval_batch['sent_labels']
         counts += eval_batch['counts']
+        predictions = []
+        for eval_out in eval_outs:
+            eval_out = eval_out.view(-1, 2)
+            pred = eval_out.argmax(dim=-1)
+            predictions.append(pred.cpu().tolist())
+        predictions = [pred for preds in predictions for pred in preds]
+        labels = [l for ls in eval_batch["labels"] for l in ls]
+        metric.add_batch(
+            predictions=predictions,
+            references=labels,
+        )
+        answ_results += predictions
+        gold_answ += eval_batch["labels"]
+    eval_metric = metric.compute()
     supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
     if not args.nolog:
         wandb.log({
             "step": steps,
             f"{split} Supp F1": supp_f1,
-            f"{split} Supp EM": supp_em
+            f"{split} Supp EM": supp_em,
+            f"{split} Answ EM": eval_metric,
         })
     if args.save_results and split == "Valid":
         torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
-    return supp_f1
+    return eval_metric['accuracy']
 
 def main():
     args = get_args()

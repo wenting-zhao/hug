@@ -685,7 +685,8 @@ def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
         for one in curr_idxes:
             curr_supps = [e['z'][m] for m in one]
             curr_supps = ' '.join(curr_supps)
-            curr_supps = e['x'] + f' {answ_tok.sep_token} ' + curr_supps
+            q = e['x']
+            curr_supps = f'Question: {q}' + f' {answ_tok.sep_token} ' + curr_supps
             supps.append(curr_supps)
         ds.append(curr_idxes)
         slengths.append(len(curr_idxes))
@@ -699,7 +700,12 @@ def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
             print("WARNING")
     tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
     answers = [e['y'] for e in examples]
-    tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
+    if not isinstance(answers[0], list):
+        print("not list")
+        tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
+    else:
+        print("list")
+        tokenized_answers = [answ_tok(a, truncation=True, return_attention_mask=False)['input_ids'] for a in answers]
     tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_supps = [tokenized_supps[slengths[i]:slengths[i+1]] for i in range(len(slengths)-1)]
     assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_sents)
@@ -713,6 +719,7 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
             data.append(json.loads(line))
     out = []
     sent_labels = []
+    labels = []
     groups = defaultdict(list)
     counts = []
     for d in data:
@@ -720,7 +727,6 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         key = d["annotation_id"][:idx].strip()
         groups[key].append(d)
     for _, values in groups.items():
-        answers = [d['query'].split('||')[-1] for d in values if d['classification'] == 'True']
         d = values[0]
         curr = dict()
         curr['x'] = d['query'].split('||')[0]
@@ -732,7 +738,16 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         curr['z'] = docs[docid]
         gold_z = [l['start_sentence'] for l in d['evidences']]
         sent_labels.append(gold_z)
-        curr['y'] = f' {answer_tokenizer.sep_token}'.join(answers)
+        labels.append([0 if d['classification'] == 'True' else 1 for d in values])
+        if split == "train":
+            answers = [d['query'].split('||')[-1] + ' (correct)' if d['classification'] == 'True' else d['query'].split('||')[-1] + ' (wrong)' for d in values]
+            curr['y'] = ['Answer:' + a for a in answers]
+            curr['y'] = f' {answer_tokenizer.sep_token}'.join(answers)
+        else:
+            curr['y'] = []
+            for d in values:
+                ans = d['query'].split('||')[-1]
+                curr['y'] += [f'Answer:{ans} (correct)', f'Answer:{ans} (wrong)']
         out.append(curr)
         counts.append(len(values))
     fname = f"cache/multirc_{split}.pkl"
@@ -743,11 +758,11 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         sents, supps, answs, ds, num_s = preprocess_multirc(out, tokenizer, answer_tokenizer, fixed, max_e)
         with open(fname, 'wb') as f:
             pickle.dump((sents, supps, answs, ds, num_s), f)
-    return (sents, supps, answs, ds, num_s, sent_labels, counts)
+    return (sents, supps, answs, ds, num_s, sent_labels, labels, counts)
 
 class MultiRCDataset(torch.utils.data.Dataset):
     def __init__(self, everything):
-        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.counts = everything
+        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.labels, self.counts = everything
 
     def __getitem__(self, idx):
         item = dict()
@@ -757,6 +772,7 @@ class MultiRCDataset(torch.utils.data.Dataset):
         item['ds'] = self.ds[idx]
         item['num_s'] = self.num_s[idx]
         item['sent_labels'] = self.sent_labels[idx]
+        item['labels'] = self.labels[idx]
         item['counts'] = self.counts[idx]
         return item
 
