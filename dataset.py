@@ -632,7 +632,7 @@ def prepare_fever(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path="
         sent_labels.append(gold_z)
         curr['y'] = d['classification'].lower()
         curr['y'] = "The claim is thus supported." if curr['y'] == "supports" else "The claim is thus refuted."
-        label = 0 if curr['y'] == "supports" else 1
+        label = 0 if "supported" in curr['y'] else 1
         labels.append(label)
         out.append(curr)
     fname = f"cache/fever_new_tok_{split}.pkl"
