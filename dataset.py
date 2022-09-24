@@ -601,11 +601,8 @@ def preprocess_fever(examples, tok, answ_tok, fixed, max_e):
     lengths = len_helper(lengths)
     slengths = len_helper(slengths)
     # there is one example that has a length 529, might cause an error
-    tokenized_sents = tok(sents, return_attention_mask=False)['input_ids']
+    tokenized_sents = tok(sents, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
-    for s in tokenized_sents:
-        if len(s) > 512:
-            print("WARNING")
     answers = [e['y'] for e in examples]
     tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
     tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
