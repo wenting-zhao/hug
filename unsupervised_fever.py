@@ -140,11 +140,11 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train):
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
         outputs = outputs.view(input_ids.size(0), -1).sum(dim=-1)
     else:
-        answs = tokenizer("supports", return_tensors="pt", return_attention_mask=False)['input_ids'].to(device)
+        answs = tokenizer("The claim is thus supported.", return_tensors="pt", return_attention_mask=False)['input_ids'].to(device)
         answs = answs.repeat(input_ids.size(0), 1)
         output1 = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
         output1 = output1.view(input_ids.size(0), -1).sum(dim=-1).view(-1, 1)
-        answs = tokenizer("refutes", return_tensors="pt", return_attention_mask=False)['input_ids'].to(device)
+        answs = tokenizer("The claim is thus refuted.", return_tensors="pt", return_attention_mask=False)['input_ids'].to(device)
         answs = answs.repeat(input_ids.size(0), 1)
         output2 = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
         output2 = output2.view(input_ids.size(0), -1).sum(dim=-1).view(-1, 1)
@@ -250,7 +250,7 @@ def main():
     train_dataloader, eval_dataloader, test_dataloader = prepare_dataloader(tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} max_e_len-{args.max_e_len}'
+    run_name=f'tok model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} max_e_len-{args.max_e_len}'
     args.run_name = run_name
     model, linear = prepare_model(args)
     answer_model = AutoModelForSeq2SeqLM.from_pretrained(args.answer_model_dir)
