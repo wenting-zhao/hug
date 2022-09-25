@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional, Union
 import math
-from datasets import load_metric
 from tqdm import tqdm
 import wandb
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -18,6 +17,7 @@ from torch import nn
 from utils import get_args, mean_pooling, padding, normalize_answer
 from utils import prepare_linear, prepare_optim_and_scheduler, padding, collect_multirc_docs
 import numpy as np
+from sklearn.metrics import f1_score
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -226,8 +226,21 @@ def update_sp(preds, golds, counts):
     sp_f1 /= total
     return sp_em, sp_f1
 
+def update_answer(preds, golds, counts):
+    f1s, ems = [], []
+    for question_preds, question_labels, cnt in zip(preds, golds, counts):
+        f1 = f1_score(y_true=question_labels, y_pred=question_preds, average="macro")
+        f1s.append(f1)
+        em = int(sum(p == l for p, l in zip(question_preds, question_labels)) == len(question_preds))
+        ems.append(em)
+    f1_m = float(sum(f1s) / len(f1s))
+    em = sum(ems) / len(ems)
+    labels = [ll for l in golds for ll in l]
+    predictions = [pp for p in preds for pp in p]
+    f1_a = float(f1_score(y_true=labels, y_pred=predictions))
+    return em, f1_m, f1_a
+
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
-    metric = load_metric("accuracy")
     sent_results = []
     gold_sents = []
     counts = []
@@ -248,26 +261,22 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
             eval_out = eval_out.view(-1, 2)
             pred = eval_out.argmax(dim=-1)
             predictions.append(pred.cpu().tolist())
-        predictions = [pred for preds in predictions for pred in preds]
-        labels = [l for ls in eval_batch["labels"] for l in ls]
-        metric.add_batch(
-            predictions=predictions,
-            references=labels,
-        )
         answ_results += predictions
         gold_answ += eval_batch["labels"]
-    eval_metric = metric.compute()
-    supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
+    supp_em, supp_f1 = update_sp(sent_results, gold_sents)
+    em, f1_m, f1_a = update_answer(answ_results, gold_answ)
     if not args.nolog:
         wandb.log({
             "step": steps,
             f"{split} Supp F1": supp_f1,
             f"{split} Supp EM": supp_em,
-            f"{split} Answ EM": eval_metric,
+            f"{split} Answ EM": em,
+            f"{split} Answ F1a": f1_a,
+            f"{split} Answ F1m": f1_m,
         })
     if args.save_results and split == "Valid":
         torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
-    return eval_metric['accuracy']
+    return f1_a
 
 def main():
     args = get_args()
