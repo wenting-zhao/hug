@@ -37,6 +37,38 @@ def update_sp(preds, golds):
     sp_recall /= len(preds)
     return sp_prec, sp_recall, sp_em, sp_f1
 
+def f1_score(predictions, ground_truths):
+    f1s, precs, recalls = 0, 0, 0
+    for prediction, ground_truth in zip(predictions, ground_truths):
+        prediction = normalize_answer(prediction)
+        ground_truth = normalize_answer(ground_truth)
+        ZERO_METRIC = (0, 0, 0)
+
+        if prediction in ['yes', 'no', 'noanswer'] and prediction != ground_truth:
+            f1, precision, recall = ZERO_METRIC
+            continue
+        if ground_truth in ['yes', 'no', 'noanswer'] and prediction != ground_truth:
+            f1, precision, recall = ZERO_METRIC
+            continue
+
+        prediction_tokens = prediction.split()
+        ground_truth_tokens = ground_truth.split()
+        common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+        num_same = sum(common.values())
+        if num_same == 0:
+            f1, precision, recall = ZERO_METRIC
+            continue
+        precision = 1.0 * num_same / len(prediction_tokens)
+        recall = 1.0 * num_same / len(ground_truth_tokens)
+        f1 = (2 * precision * recall) / (precision + recall)
+        f1s += f1
+        precs += precision
+        recalls += recall
+    f1s /= len(predictions)
+    precs /= len(predictions)
+    recalls /= len(predictions)
+    return f1s, precs, recalls
+
 def check_ans_in_span(ans, span):
     if isinstance(span, list):
         span = ' '.join(span)
@@ -136,3 +168,4 @@ get_changes({"pcac": pcac1, "pcai": pcai1, "piac": piac1, "piai": piai1},
         {"pcac": pcac2, "pcai": pcai2, "piac": piac2, "piai": piai2})
 
 print(update_sp(pred_paras2, gold_paras))
+print(f1_score(pred_ans2, gold_ans))
