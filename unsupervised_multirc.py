@@ -226,9 +226,9 @@ def update_sp(preds, golds, counts):
     sp_f1 /= total
     return sp_em, sp_f1
 
-def update_answer(preds, golds, counts):
+def update_answer(preds, golds):
     f1s, ems = [], []
-    for question_preds, question_labels, cnt in zip(preds, golds, counts):
+    for question_preds, question_labels in zip(preds, golds):
         f1 = f1_score(y_true=question_labels, y_pred=question_preds, average="macro")
         f1s.append(f1)
         em = int(sum(p == l for p, l in zip(question_preds, question_labels)) == len(question_preds))
@@ -263,7 +263,7 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
             predictions.append(pred.cpu().tolist())
         answ_results += predictions
         gold_answ += eval_batch["labels"]
-    supp_em, supp_f1 = update_sp(sent_results, gold_sents)
+    supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
     em, f1_m, f1_a = update_answer(answ_results, gold_answ)
     if not args.nolog:
         wandb.log({
