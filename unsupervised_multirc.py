@@ -254,10 +254,9 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         predictions = []
         for eval_out, sent_pred in zip(eval_outs, sent_preds):
             pred = eval_out[0].argmax(dim=-1)
-            predictions += pred.cpu().tolist()
-        labels = [ll for l in eval_batch["labels"] for ll in l.cpu().tolist()]
+            predictions.append(pred.cpu().tolist())
         answ_results += predictions
-        gold_answ += eval_batch["labels"]
+        gold_answ += [labels.cpu().tolist() for labels in eval_batch["labels"]]
     supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
     em, f1_m, f1_a = update_answer(answ_results, gold_answ)
     if not args.nolog:
@@ -271,7 +270,7 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         })
     if args.save_results and split == "Valid":
         torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
-    return eval_metric['accuracy']
+    return em
 
 def main():
     args = get_args()
