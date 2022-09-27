@@ -676,7 +676,7 @@ def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
         z_len = len(e['z'])
         rang = list(range(z_len))
         curr_idxes = []
-        for i in range(1, max_e+1):
+        for i in range(2, max_e+1):
             curr_idxes += list(combinations(rang, r=i))
         for one in curr_idxes:
             curr_supps = [e['z'][m] for m in one]
