@@ -256,9 +256,8 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
             pred = eval_out[0].argmax(dim=-1)
             predictions += pred.cpu().tolist()
         labels = [ll for l in eval_batch["labels"] for ll in l.cpu().tolist()]
-        if args.save_results and split == "Valid":
-            answ_results += predictions
-            gold_answ += eval_batch["labels"]
+        answ_results += predictions
+        gold_answ += eval_batch["labels"]
     supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
     em, f1_m, f1_a = update_answer(answ_results, gold_answ)
     if not args.nolog:
