@@ -213,13 +213,15 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
     for step, eval_batch in enumerate(dataloader):
         eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, train=False)
         sent_preds = []
+        raw_sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
             sent_pred = sent_out.argmax(dim=-1).item()
+            raw_sent_preds.append(sent_pred)
             flattened = [sm for sms in s_map for sm in sms]
             sent_pred = flattened[sent_pred]
             sent_preds.append(sent_pred)
         predictions = []
-        for eval_out, sent_pred in zip(eval_outs, sent_preds):
+        for eval_out, sent_pred in zip(eval_outs, raw_sent_preds):
             pred = eval_out[sent_pred].argmax(dim=-1)
             predictions.append(pred.item())
         metric.add_batch(
