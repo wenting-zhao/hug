@@ -109,7 +109,7 @@ def get_args():
     return args
 
 def prepare_optim_and_scheduler(all_layers, args):
-    no_decay = ["bias", "LayerNorm.weight"]
+    no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight"]
     optimizer_grouped_parameters = []
     for layer in all_layers:
         curr = [
