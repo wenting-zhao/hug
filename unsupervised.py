@@ -312,7 +312,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
         eval_outs, sent_preds, _ = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False,
-                mode="topk", topkp=args.topkp, sec_topkp=args.topksecp, topks=args.topks, beam=args.beam)
+                mode="topk", topkp=1, sec_topkp=1, topks=1, beam=args.beam)
         eval_outs, scores = eval_outs
         para_sent, top_pouts, top_souts, indices = sent_preds
         ans_prior_preds = []
