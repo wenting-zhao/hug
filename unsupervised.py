@@ -177,7 +177,7 @@ def get_selected(paras, combs, sents, kp, ks, mode):
         all_top_souts.append(top_souts)
     return all_ps_vals, all_top_pouts, all_top_souts
 
-def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
+def pad_answers(tokenizer, contexts, raw_answers, topkp, topks, word_dropout):
     lens = []
     out_cs = []
     indices = []
@@ -201,6 +201,11 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks):
         padding='longest',
         return_tensors="pt",
     )
+    if word_dropout > 0:
+        for i in range(out['input_ids'].size(0)):
+            j = (out['input_ids'][i] == tokenizer.sep_token_id).nonzero(as_tuple=False)[0, 0]
+            new = torch.where(torch.rand(out['attention_mask'][i][:j].size()) < word_dropout, 0, 1)
+            out['attention_mask'][i][:j] = new
     raw_answers = [[a] * l for a, l in zip(raw_answers, lens)]
     raw_answers = [a for ans in raw_answers for a in ans]
     raw_answers = [{"input_ids": a} for a in raw_answers]
@@ -247,7 +252,7 @@ def process_answ(answ, ps_out, in_len):
     else:
         return outs
 
-def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, mode, topkp, sec_topkp, topks, beam=2, train=True):
+def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, reg_coeff, t, mode, topkp, sec_topkp, topks, word_dropout=0, beam=2, train=True):
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
@@ -257,7 +262,7 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     souts = run_sent_model(layers[3], tokenizer, batch["input_ids"], lm_outs, batch["ds"], batch["num_s"])
     para_sent, top_pouts, top_souts = get_selected(pouts, combs, souts, topkp, topks, mode=mode)
     answer_in, answer_attn, labels, indices = pad_answers(
-            answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts)
+            answer_tokenizer, batch["contexts"], batch['answers'], top_pouts, top_souts, word_dropout)
     in_len = len(answer_in)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
     answ_out = process_answ(answ_out, para_sent, in_len)
@@ -405,7 +410,7 @@ def main():
                 answer_model.train()
             _, _, loss = run_model(batch, all_layers, answer_model, tokenizer,
                     answer_tokenizer, reg_coeff=args.reg_coeff, t=args.sentence_thrshold, max_p=args.max_p,
-                    mode=args.mode, topkp=args.topkp, sec_topkp=args.topksecp, topks=args.topks)
+                    mode=args.mode, topkp=args.topkp, sec_topkp=args.topksecp, topks=args.topks, word_dropout=args.word_dropout)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
