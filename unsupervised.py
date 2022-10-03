@@ -356,7 +356,7 @@ def main():
     train_dataloader, eval_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
-    run_name=f'newtopk model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks} wd-{args.weight_decay}'
+    run_name=f'adam newtopk model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks} wd-{args.weight_decay}'
     args.run_name = run_name
     all_layers = prepare_model(args)
     if args.checkpoint != "":

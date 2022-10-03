@@ -6,7 +6,7 @@ import re
 from datasets import load_dataset
 import torch
 from torch import nn
-from torch.optim import AdamW
+from torch.optim import Adam
 from transformers import get_scheduler
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -124,7 +124,7 @@ def prepare_optim_and_scheduler(all_layers, args):
         ]
         optimizer_grouped_parameters += curr
 
-    optim = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+    optim = Adam(optimizer_grouped_parameters, lr=args.learning_rate)
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
         optimizer=optim,
