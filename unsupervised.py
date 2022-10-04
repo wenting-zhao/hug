@@ -203,9 +203,7 @@ def pad_answers(tokenizer, contexts, raw_answers, topkp, topks, word_dropout):
     )
     if word_dropout > 0:
         for i in range(out['input_ids'].size(0)):
-            j = (out['input_ids'][i] == tokenizer.sep_token_id).nonzero(as_tuple=False)[0, 0]
-            new = torch.where(torch.rand(out['attention_mask'][i][:j].size()) < word_dropout, 0, 1)
-            out['attention_mask'][i][:j] = new
+            out['attention_mask'][i] = torch.where(torch.rand(out['attention_mask'][i].size()) < word_dropout, 0, out['attention_mask'][i])
     raw_answers = [[a] * l for a, l in zip(raw_answers, lens)]
     raw_answers = [a for ans in raw_answers for a in ans]
     raw_answers = [{"input_ids": a} for a in raw_answers]
