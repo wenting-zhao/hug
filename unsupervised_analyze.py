@@ -109,17 +109,21 @@ def intersection_helper(target, a, b, c, d):
     dd = len(target.intersection(d)) / len(target)
     return aa, bb, cc, dd
 
-def get_confusion_matrix(paras, pred_ans, gold_ans, gold_supps, para_texts):
+def get_confusion_matrix(paras, pred_anss, gold_anss, gold_supps, para_texts):
     print(Counter([p for ps in paras for p in ps]))
     pcac = set()
     pcai = set()
     piac = set()
     piai = set()
     i = 0
+    out_span = 0
     pcorrect_supps = set()
-    for para, pred_ans, gold_ans, ss, text in zip(paras, pred_ans, gold_ans, gold_supps, para_texts):
+    for para, pred_ans, gold_ans, ss, text in zip(paras, pred_anss, gold_anss, gold_supps, para_texts):
         x, y = para
         wrong_para = check_para_correct(para, ss)
+        if not check_ans_in_span(pred_ans, text[x]+text[y]):
+            if gold_ans != "yes" and gold_ans != "no":
+                out_span += 1
         if wrong_para == 1:
             pcorrect_supps.add(i)
         if wrong_para == 0 and pred_ans == gold_ans:
