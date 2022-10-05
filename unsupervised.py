@@ -262,11 +262,14 @@ def run_model(batch, layers, answer_model, tokenizer, answer_tokenizer, max_p, r
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, beam=beam, train=train)
     answ_out = process_answ(answ_out, para_sent, in_len)
     loss = 0.
-    if train:
-        for l, ps in zip(answ_out, para_sent):
-            l += ps
-            l = torch.logsumexp(l, dim=-1)
-            loss -= l.mean()
+    if not train:
+        this = answ_out[-1]
+    else:
+        this = answ_out
+    for l, ps in zip(this, para_sent):
+        l += ps
+        l = torch.logsumexp(l, dim=-1)
+        loss -= l.mean()
     loss /= bs
     return answ_out, (para_sent, top_pouts, top_souts, indices), loss
 
@@ -306,13 +309,17 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
     para_results = []
     gold_paras = []
     answ_results = []
+    likelihoods = []
     for step, eval_batch in enumerate(dataloader):
+        if len(para_results) > 1000:
+            continue
         bs = len(eval_batch["answers"])
         gold = answ_tok.batch_decode(eval_batch['answers'], skip_special_tokens=True)
-        eval_outs, sent_preds, _ = run_model(
+        eval_outs, sent_preds, loss = run_model(
                 eval_batch, layers, answ_model, tok, answ_tok, max_p=True,
                 reg_coeff=args.reg_coeff, t=args.sentence_thrshold, train=False,
-                mode="topk", topkp=1, sec_topkp=1, topks=1, beam=args.beam)
+                mode="topk", topkp=10, sec_topkp=1, topks=9, beam=args.beam)
+        likelihoods.append(loss.item())
         eval_outs, scores = eval_outs
         para_sent, top_pouts, top_souts, indices = sent_preds
         ans_prior_preds = []
@@ -343,6 +350,7 @@ def evaluate(steps, args, layers, answ_model, tok, answ_tok, dataloader, split):
             f"{split} Supp F1": supp_f1,
             f"{split} Supp EM": supp_em,
             f"{split} Answ EM": eval_metric,
+            f"{split} Likelihood": sum(likelihoods)/len(likelihoods),
         })
     if args.save_results and split == "Valid":
         torch.save((para_results, gold_paras, answ_results), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
@@ -378,7 +386,7 @@ def main():
 
     if not args.nolog:
         wandb.init(name=run_name,
-               project='hotpotqa_unsup_sequential',
+               project='hotpotqa_unsup_likelihood',
                tags=['hotpotqa'])
         wandb.config.lr = args.learning_rate
         wandb.watch(all_layers[0])
@@ -393,6 +401,8 @@ def main():
                 all_layers[0].eval()
                 answer_model.eval()
                 with torch.no_grad():
+                    evaluate(completed_steps, args, all_layers, answer_model,
+                                    tokenizer, answer_tokenizer, train_dataloader, "Train")
                     valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
                                              tokenizer, answer_tokenizer, eval_dataloader, "Valid")
                 if valid_acc > best_valid:
