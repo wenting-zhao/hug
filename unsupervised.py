@@ -89,8 +89,9 @@ def prepare_dataloader(data, tok, answer_tok, args):
     eval_dataset = UnsupHotpotQADataset(tparas, tsupps, tansws, tds)
     data_collator = DataCollatorForMultipleChoice(tok, padding='longest', max_length=512)
     train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.batch_size)
+    train_dataloader2 = DataLoader(train_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.batch_size)
     eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.eval_batch_size)
-    return train_dataloader, eval_dataloader
+    return train_dataloader, eval_dataloader, train_dataloader2
 
 def run_lm(model, batch, train):
     outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
@@ -361,7 +362,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     answer_tokenizer = AutoTokenizer.from_pretrained(args.answer_model_dir)
     data = load_hotpotqa()
-    train_dataloader, eval_dataloader = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
+    train_dataloader, eval_dataloader, train_dataloader2 = prepare_dataloader(data, tokenizer, answer_tokenizer, args)
 
     model_name = args.model_dir.split('/')[-1]
     run_name=f'newtopk model-{model_name} lr-{args.learning_rate} bs-{args.batch_size*args.gradient_accumulation_steps} k-{args.k_distractor} tp-{args.truncate_paragraph} beam-{args.beam} topkp-{args.topkp} topks-{args.topks} wd-{args.weight_decay}'
@@ -402,7 +403,7 @@ def main():
                 answer_model.eval()
                 with torch.no_grad():
                     evaluate(completed_steps, args, all_layers, answer_model,
-                                    tokenizer, answer_tokenizer, train_dataloader, "Train")
+                                    tokenizer, answer_tokenizer, train_dataloader2, "Train")
                     valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
                                              tokenizer, answer_tokenizer, eval_dataloader, "Valid")
                 if valid_acc > best_valid:
