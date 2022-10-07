@@ -202,8 +202,8 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     return answ_out, outs, loss
 
 def update_sp(preds, golds, counts):
-    sp_em, sp_f1 = 0, 0
-    for cur_sp_pred, gold_sp_pred, cnt in zip(preds, golds, counts):
+    sp_em, sp_f1, sp_prec, sp_recall = 0, 0, 0, 0
+    for cur_sp_pred, gold_sp_pred in zip(preds, golds):
         tp, fp, fn = 0, 0, 0
         for e in cur_sp_pred:
             if e in gold_sp_pred:
@@ -217,14 +217,15 @@ def update_sp(preds, golds, counts):
         recall = 1.0 * tp / (tp + fn) if tp + fn > 0 else 0.0
         f1 = 2 * prec * recall / (prec + recall) if prec + recall > 0 else 0.0
         em = 1.0 if fp + fn == 0 else 0.0
-        f1 = f1 * cnt
-        em = em * cnt
         sp_em += em
         sp_f1 += f1
-    total = sum(counts)
-    sp_em /= total
-    sp_f1 /= total
-    return sp_em, sp_f1
+        sp_prec += prec
+        sp_recall += recall
+    sp_em /= len(preds)
+    sp_f1 /= len(preds)
+    sp_prec /= len(preds)
+    sp_recall /= len(preds)
+    return sp_em, sp_f1, sp_prec, sp_recall
 
 def update_answer(preds, golds):
     f1s, ems = [], []
@@ -238,7 +239,8 @@ def update_answer(preds, golds):
     labels = [ll for l in golds for ll in l]
     predictions = [pp for p in preds for pp in p]
     f1_a = float(f1_score(y_true=labels, y_pred=predictions))
-    return em, f1_m, f1_a
+    acc = sum(p == l for p, l in zip(predictions, labels)) / len(predictions)
+    return em, f1_m, f1_a, acc
 
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
     sent_results = []
@@ -263,16 +265,19 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
             predictions.append(pred.cpu().tolist())
         answ_results += predictions
         gold_answ += eval_batch["labels"]
-    supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
-    em, f1_m, f1_a = update_answer(answ_results, gold_answ)
+    supp_em, supp_f1, prec, recall = update_sp(sent_results, gold_sents, counts)
+    em, f1_m, f1_a, acc = update_answer(answ_results, gold_answ)
     if not args.nolog:
         wandb.log({
             "step": steps,
             f"{split} Supp F1": supp_f1,
             f"{split} Supp EM": supp_em,
+            f"{split} Supp Prec": prec,
+            f"{split} Supp Rec": recall,
             f"{split} Answ EM": em,
             f"{split} Answ F1a": f1_a,
             f"{split} Answ F1m": f1_m,
+            f"{split} Answ Acc": acc,
         })
     if args.save_results and split == "Valid":
         torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
