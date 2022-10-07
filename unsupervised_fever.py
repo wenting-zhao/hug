@@ -210,7 +210,7 @@ def update_sp(preds, golds):
 
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
     metric = load_metric("accuracy")
-    f1_metric = datasets.load_metric("f1")
+    f1_metric = load_metric("f1")
     sent_results = []
     gold_sents = []
     answ_results = []
