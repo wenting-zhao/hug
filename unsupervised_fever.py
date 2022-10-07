@@ -183,7 +183,7 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, t
     return answ_out, souts, loss
 
 def update_sp(preds, golds):
-    sp_em, sp_f1 = 0, 0
+    sp_em, sp_f1, sp_prec, sp_recall = 0, 0, 0, 0
     for cur_sp_pred, gold_sp_pred in zip(preds, golds):
         tp, fp, fn = 0, 0, 0
         for e in cur_sp_pred:
@@ -200,12 +200,17 @@ def update_sp(preds, golds):
         em = 1.0 if fp + fn == 0 else 0.0
         sp_em += em
         sp_f1 += f1
+        sp_prec += prec
+        sp_recall += recall
     sp_em /= len(preds)
     sp_f1 /= len(preds)
-    return sp_em, sp_f1
+    sp_prec /= len(preds)
+    sp_recall /= len(preds)
+    return sp_em, sp_f1, sp_prec, sp_recall
 
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
     metric = load_metric("accuracy")
+    f1_metric = datasets.load_metric("f1")
     sent_results = []
     gold_sents = []
     answ_results = []
@@ -228,18 +233,26 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
             predictions=predictions,
             references=eval_batch["labels"],
         )
+        f1_metric.add_batch(
+            predictions=predictions,
+            references=eval_batch["labels"],
+        )
         sent_results += sent_preds
         gold_sents += eval_batch['sent_labels']
         answ_results += predictions
         gold_answ += eval_batch["labels"]
     eval_metric = metric.compute()
-    supp_em, supp_f1 = update_sp(sent_results, gold_sents)
+    eval_f1_metric = f1_metric.compute()
+    supp_em, supp_f1, prec, recall = update_sp(sent_results, gold_sents)
     if not args.nolog:
         wandb.log({
             "step": steps,
             f"{split} Supp F1": supp_f1,
             f"{split} Supp EM": supp_em,
+            f"{split} Supp Prec": prec,
+            f"{split} Supp Rec": recall,
             f"{split} Answ EM": eval_metric,
+            f"{split} Answ F1": eval_f1_metric,
         })
     if args.save_results and split == "Valid":
         torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
