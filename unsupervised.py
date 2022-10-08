@@ -220,7 +220,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
         outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
-        scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=outputs)
+        scores = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
         outputs = (outputs, scores)
     return outputs
 
@@ -399,8 +399,6 @@ def main():
                 all_layers[0].eval()
                 answer_model.eval()
                 with torch.no_grad():
-                    evaluate(completed_steps, args, all_layers, answer_model,
-                                    tokenizer, answer_tokenizer, train_dataloader, "Train")
                     valid_acc = evaluate(completed_steps, args, all_layers, answer_model,
                                              tokenizer, answer_tokenizer, eval_dataloader, "Valid")
                 if valid_acc > best_valid:
