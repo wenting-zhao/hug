@@ -659,45 +659,9 @@ class FeverDataset(torch.utils.data.Dataset):
         return len(self.sent_labels)
 
 def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
-    sents = []
-    supps = []
-    lengths = []
-    slengths = []
-    ds = []
-    num_s = []
-    for e in examples:
-        curr_sents = []
-        for i in range(0, len(e['z']), fixed):
-            sent = f'{tok.unk_token} ' + f' {tok.unk_token} '.join(e['z'][i:i+fixed])
-            sent = e['x'] + f' {tok.sep_token} ' + sent
-            curr_sents.append(sent)
-        lengths.append(len(curr_sents))
-        sents += curr_sents
-        z_len = len(e['z'])
-        rang = list(range(z_len))
-        curr_idxes = []
-        for i in range(2, max_e+1):
-            curr_idxes += list(combinations(rang, r=i))
-        for one in curr_idxes:
-            curr_supps = [e['z'][m] for m in one]
-            curr_supps = ' '.join(curr_supps)
-            curr_supps = e['x'] + f' {answ_tok.sep_token} ' + curr_supps + f' {answ_tok.sep_token} ' + f' {answ_tok.unk_token} ' + e['y']
-            supps.append(curr_supps)
-        ds.append(curr_idxes)
-        slengths.append(len(curr_idxes))
-        num_s.append(z_len)
-    lengths = len_helper(lengths)
-    slengths = len_helper(slengths)
-    #tokenized_sents = tok(sents, truncation=True, return_attention_mask=False)['input_ids']
+    sents = [e['x'] + f' {tok.unk_token} ' + e['y'] for e in examples]
     tokenized_sents = tok(sents, return_attention_mask=False)['input_ids']
-    for s in tokenized_sents:
-        if len(s) > 512:
-            print("WARNING")
-    tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
-    tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
-    tokenized_supps = [tokenized_supps[slengths[i]:slengths[i+1]] for i in range(len(slengths)-1)]
-    assert len(tokenized_supps) == len(tokenized_sents)
-    return tokenized_sents, tokenized_supps, ds, num_s
+    return tokenized_sents
 
 def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path="data/multirc/"):
     print(f"prepare MultiRC {split}")
@@ -731,30 +695,25 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         curr['y'] = f' {answer_tokenizer.unk_token}'.join(answers)
         out.append(curr)
         counts.append(len(values))
-    fname = f"cache/multirc_nobart_{split}.pkl"
+    fname = f"cache/multirc_noz_{split}.pkl"
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
-            sents, supps, ds, num_s = pickle.load(f)
+            sents = pickle.load(f)
     else:
-        sents, supps, ds, num_s = preprocess_multirc(out, tokenizer, answer_tokenizer, fixed, max_e)
+        sents = preprocess_multirc(out, tokenizer, answer_tokenizer, fixed, max_e)
         with open(fname, 'wb') as f:
-            pickle.dump((sents, supps, ds, num_s), f)
-    return (sents, supps, ds, num_s, sent_labels, labels, counts)
+            pickle.dump(sents, f)
+    return (sents, labels)
 
 class MultiRCDataset(torch.utils.data.Dataset):
     def __init__(self, everything):
-        self.sents, self.supps, self.ds, self.num_s, self.sent_labels, self.labels, self.counts = everything
+        self.sents, self.labels, = everything
 
     def __getitem__(self, idx):
         item = dict()
         item['sents'] = self.sents[idx]
-        item['supps'] = self.supps[idx]
-        item['ds'] = self.ds[idx]
-        item['num_s'] = self.num_s[idx]
-        item['sent_labels'] = self.sent_labels[idx]
         item['labels'] = self.labels[idx]
-        item['counts'] = self.counts[idx]
         return item
 
     def __len__(self):
-        return len(self.sent_labels)
+        return len(self.labels)

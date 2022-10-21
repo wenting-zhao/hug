@@ -32,8 +32,6 @@ class DataCollatorForMultipleChoice:
     def __call__(self, features):
         batch_size = len(features)
         sents = [feature.pop("sents") for feature in features]
-        lengths = [len(sents[i]) for i in range(len(sents))]
-        sents = [s for ss in sents for s in ss]
         sents = [{"input_ids": x} for x in sents]
 
         batch = self.tokenizer.pad(
@@ -44,27 +42,11 @@ class DataCollatorForMultipleChoice:
             return_tensors="pt",
         )
 
-        context_name = "supps"
-        contexts = [feature.pop(context_name) for feature in features]
-        ds_name = "ds"
-        ds = [feature.pop(ds_name) for feature in features]
-        slabel_name = "sent_labels"
-        slabels = [feature.pop(slabel_name) for feature in features]
         label_name = "labels"
         labels = [feature.pop(label_name) for feature in features]
-        sent_name = "num_s"
-        num_s = [feature.pop(sent_name) for feature in features]
-        count_name = "counts"
-        counts = [feature.pop(count_name) for feature in features]
 
         # Add back labels
-        batch['contexts'] = contexts
-        batch['s_maps'] = ds
-        batch['sent_labels'] = slabels
         batch['labels'] = [torch.tensor(l, dtype=torch.long, device=device) for l in labels]
-        batch['lengths'] = lengths
-        batch['num_s'] = num_s
-        batch['counts'] = counts
         return batch
 
 def prepare_dataloader(tok, answ_tok, args):
@@ -162,11 +144,11 @@ def run_answer_model(model, linear0, linear1, input_ids, attn_mask, answ_tok, tr
     outs = m(outs)
     return outs
 
-def process_answ(answ, ps_out, labels, train):
+def process_answ(answ, labels, train):
     start, end = 0, 0
     outs = []
-    for curr, l in zip(ps_out, labels):
-        end += len(curr) * len(l)
+    for l in labels:
+        end += len(l)
         out = answ[start:end].view(-1, len(l), 2)
         if train:
             out = out[:, torch.arange(len(l), device=device), l]
@@ -180,21 +162,15 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
-    lm_outs = run_lm(model, batch, train=train)
-    souts = run_sent_model(sent_linear, tokenizer, batch["input_ids"], lm_outs, batch['num_s'], batch['s_maps'], model.config.hidden_dropout_prob, train)
-    vals, outs = get_selected(souts, ks, mode)
-    answer_in, answer_attn = pad_answers(answer_tokenizer, batch["contexts"], outs)
-    answ_out = run_answer_model(answer_model, ans_linear0, ans_linear1, answer_in, answer_attn, answer_tokenizer, train=train)
-    answ_out = process_answ(answ_out, outs, batch["labels"], train)
+    answ_out = run_answer_model(answer_model, ans_linear0, ans_linear1, batch['input_ids'], batch['attention_mask'], answer_tokenizer, train=train)
+    answ_out = process_answ(answ_out, batch["labels"], train)
     loss = 0.
     if train:
-        for l, ps in zip(answ_out, vals):
-            l = l + ps
+        for l in answ_out:
             l = torch.logsumexp(l, dim=-1)
             loss -= l.mean()
-        bs = len(vals)
-        loss /= bs
-    return answ_out, outs, loss
+        loss /= batch['input_ids'].size(0)
+    return answ_out, loss
 
 def update_sp(preds, golds, counts):
     sp_em, sp_f1 = 0, 0
@@ -242,28 +218,14 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
     answ_results = []
     gold_answ = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=1, train=False)
-        sent_preds = []
-        for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
-            sent_pred = sent_out[0].item()
-            sent_pred = s_map[sent_pred]
-            sent_preds.append(sent_pred)
-        sent_results += sent_preds
-        gold_sents += eval_batch['sent_labels']
-        counts += eval_batch['counts']
-        predictions = []
-        for eval_out, sent_pred in zip(eval_outs, sent_preds):
-            pred = eval_out[0].argmax(dim=-1)
-            predictions.append(pred.cpu().tolist())
-        answ_results += predictions
+        eval_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=1, train=False)
+        answ_results += [preds.argmax(dim=-1).cpu().tolist() for preds in eval_outs]
         gold_answ += [labels.cpu().tolist() for labels in eval_batch["labels"]]
-    supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
+    answ_results = [aa for a in answ_results for aa in a]
     em, f1_m, f1_a = update_answer(answ_results, gold_answ)
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Supp F1": supp_f1,
-            f"{split} Supp EM": supp_em,
             f"{split} Answ EM": em,
             f"{split} Answ F1a": f1_a,
             f"{split} Answ F1m": f1_m,
@@ -327,7 +289,7 @@ def main():
                         model.save_pretrained(f"{args.output_model_dir}/{run_name}")
                 model.train()
                 answer_model.train()
-            _, _, loss = run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, args.topks, mode=args.mode)
+            _, loss = run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, args.topks, mode=args.mode)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
