@@ -16,13 +16,16 @@ def update_sp(preds, golds):
                         tp += 1
                     else:
                         fp += 1
+            else:
+                for v in cur_sp_pred[e]:
+                    fp += 1
         for e in gold_sp_pred:
             if e not in cur_sp_pred:
                 fn += len(gold_sp_pred[e])
             else:
                 for v in gold_sp_pred[e]:
                     if v not in cur_sp_pred[e]:
-                        fn += len(gold_sp_pred[e])
+                        fn += 1
         prec = 1.0 * tp / (tp + fp) if tp + fp > 0 else 0.0
         recall = 1.0 * tp / (tp + fn) if tp + fn > 0 else 0.0
         f1 = 2 * prec * recall / (prec + recall) if prec + recall > 0 else 0.0
