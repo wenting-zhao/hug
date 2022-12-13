@@ -18,6 +18,7 @@ from utils import get_args, mean_pooling, padding, normalize_answer
 from utils import prepare_linear, prepare_optim_and_scheduler, padding, collect_multirc_docs
 import numpy as np
 from sklearn.metrics import f1_score
+import time
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -322,6 +323,8 @@ def main():
     best_valid = float('-inf')
     model.train()
     answer_model.train()
+    train_time = 0
+    test_time = []
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if completed_steps % args.eval_steps == 0 and completed_steps > 0 and step % args.gradient_accumulation_steps == 0:
@@ -330,14 +333,18 @@ def main():
                 with torch.no_grad():
                     valid_acc = evaluate(completed_steps, args, model, linear, answer_model,
                                              tokenizer, answer_tokenizer, eval_dataloader, "Valid")
+                    st_time = time.time()
                     test_acc = evaluate(completed_steps, args, model, linear, answer_model,
                                              tokenizer, answer_tokenizer, test_dataloader, "Test")
+                    ed_time = time.time()
+                    test_time.append(ed_time-st_time)
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
                         model.save_pretrained(f"{args.output_model_dir}/{run_name}")
                 model.train()
                 answer_model.train()
+            st_time = time.time()
             _, _, loss = run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, args.topks, mode=args.mode)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -350,6 +357,10 @@ def main():
                     wandb.log({
                         "step": completed_steps,
                         "Train Loss": loss.item()})
+            ed_time = time.time()
+            train_time += ed_time-st_time
+    print(train_time)
+    print(test_time, sum(test_time)/len(test_time))
 
 if __name__ == '__main__':
     main()
