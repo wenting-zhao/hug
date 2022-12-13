@@ -18,6 +18,7 @@ from utils import get_args, mean_pooling, padding, normalize_answer
 from utils import prepare_linear, prepare_optim_and_scheduler, padding, collect_multirc_docs
 import numpy as np
 from sklearn.metrics import f1_score
+import time
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
@@ -88,59 +89,8 @@ def prepare_model(args):
     linear2 = prepare_linear(model.config.hidden_size)
     return model, [linear, linear1, linear2]
 
-def run_lm(model, batch, train):
-    outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
-    return outputs
-
-def run_sent_model(linear, tok, input_ids, lm_outputs, num_s, s_maps, dropout_p, train):
-    m = nn.LogSoftmax(dim=-1)
-    indices = (input_ids == tok.unk_token_id).nonzero(as_tuple=False)
-    lm_outs = lm_outputs[0][indices[:, 0], indices[:, 1]]
-    if train:
-        dropout = nn.Dropout(dropout_p)
-        lm_outs = dropout(lm_outs)
-    assert sum(num_s) == lm_outs.size(0)
-    groups = []
-    start, end = 0, 0
-    for n, s_map in zip(num_s, s_maps):
-        end += n
-        curr_indices = indices[start:end]
-        curr_lm_outs = lm_outs[start:end]
-        out = []
-        for i in range(len(s_map)):
-            this_idxes = s_map[i]
-            this_idxes = torch.tensor(this_idxes)
-            this_combs = curr_lm_outs[this_idxes]
-            this_combs = this_combs.mean(dim=0).view(1, -1)
-            out.append(this_combs)
-        out = torch.cat(out, dim=0)
-        out = linear(out).view(-1)
-        out = m(out)
-        groups.append(out)
-        start = end
-    return groups
-
-def get_selected(sents, ks, mode):
-    all_vals, all_outs = [], []
-    for s in sents:
-        if mode == "topk":
-            top_vals, top_outs = torch.topk(s, k=ks) if len(s) > ks else torch.topk(s, k=len(s))
-        elif mode == "sample":
-            top_outs = torch.from_numpy(np.random.choice(range(len(s)), ks, replace=False)) if len(s) > ks else torch.arange(len(s))
-            top_vals = s[top_outs]
-        all_vals.append(top_vals)
-        all_outs.append(top_outs)
-    return all_vals, all_outs
-
-def pad_answers(tokenizer, contexts, topks):
-    lens = []
-    out_cs = []
-    for cont, cur_topks in zip(contexts, topks):
-        curr = [cont[j] for j in cur_topks]
-        out_cs += curr
-        l = len(curr)
-        lens.append(l)
-    out_cs = [{"input_ids": c} for c in out_cs]
+def pad_answers(tokenizer, contexts):
+    out_cs = [{"input_ids": c[0]} for c in contexts]
     out = tokenizer.pad(
         out_cs,
         padding='longest',
@@ -162,11 +112,11 @@ def run_answer_model(model, linear0, linear1, input_ids, attn_mask, answ_tok, tr
     outs = m(outs)
     return outs
 
-def process_answ(answ, ps_out, labels, train):
+def process_answ(answ, labels, train):
     start, end = 0, 0
     outs = []
-    for curr, l in zip(ps_out, labels):
-        end += len(curr) * len(l)
+    for l in labels:
+        end += len(l)
         out = answ[start:end].view(-1, len(l), 2)
         if train:
             out = out[:, torch.arange(len(l), device=device), l]
@@ -180,46 +130,17 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     for key in batch:
         if key == "input_ids" or key == "attention_mask":
             batch[key] = batch[key].to(device)
-    lm_outs = run_lm(model, batch, train=train)
-    souts = run_sent_model(sent_linear, tokenizer, batch["input_ids"], lm_outs, batch['num_s'], batch['s_maps'], model.config.hidden_dropout_prob, train)
-    vals, outs = get_selected(souts, ks, mode)
-    answer_in, answer_attn = pad_answers(answer_tokenizer, batch["contexts"], outs)
+    answer_in, answer_attn = pad_answers(answer_tokenizer, batch["contexts"])
     answ_out = run_answer_model(answer_model, ans_linear0, ans_linear1, answer_in, answer_attn, answer_tokenizer, train=train)
-    answ_out = process_answ(answ_out, outs, batch["labels"], train)
+    answ_out = process_answ(answ_out, batch["labels"], train)
     loss = 0.
     if train:
-        for l, ps in zip(answ_out, vals):
-            l = l + ps
+        for l in answ_out:
             l = torch.logsumexp(l, dim=-1)
             loss -= l.mean()
-        bs = len(vals)
+        bs = len(answ_out)
         loss /= bs
-    return answ_out, outs, loss
-
-def update_sp(preds, golds, counts):
-    sp_em, sp_f1 = 0, 0
-    for cur_sp_pred, gold_sp_pred, cnt in zip(preds, golds, counts):
-        tp, fp, fn = 0, 0, 0
-        for e in cur_sp_pred:
-            if e in gold_sp_pred:
-                tp += 1
-            else:
-                fp += 1
-        for e in gold_sp_pred:
-            if e not in cur_sp_pred:
-                fn += 1
-        prec = 1.0 * tp / (tp + fp) if tp + fp > 0 else 0.0
-        recall = 1.0 * tp / (tp + fn) if tp + fn > 0 else 0.0
-        f1 = 2 * prec * recall / (prec + recall) if prec + recall > 0 else 0.0
-        em = 1.0 if fp + fn == 0 else 0.0
-        f1 = f1 * cnt
-        em = em * cnt
-        sp_em += em
-        sp_f1 += f1
-    total = sum(counts)
-    sp_em /= total
-    sp_f1 /= total
-    return sp_em, sp_f1
+    return answ_out, loss
 
 def update_answer(preds, golds):
     f1s, ems = [], []
@@ -242,28 +163,17 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
     answ_results = []
     gold_answ = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=1, train=False)
-        sent_preds = []
-        for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
-            sent_pred = sent_out[0].item()
-            sent_pred = s_map[sent_pred]
-            sent_preds.append(sent_pred)
-        sent_results += sent_preds
-        gold_sents += eval_batch['sent_labels']
-        counts += eval_batch['counts']
+        eval_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, ks=1, train=False)
         predictions = []
-        for eval_out, sent_pred in zip(eval_outs, sent_preds):
+        for eval_out in eval_outs:
             pred = eval_out[0].argmax(dim=-1)
             predictions.append(pred.cpu().tolist())
         answ_results += predictions
         gold_answ += [labels.cpu().tolist() for labels in eval_batch["labels"]]
-    supp_em, supp_f1 = update_sp(sent_results, gold_sents, counts)
     em, f1_m, f1_a = update_answer(answ_results, gold_answ)
     if not args.nolog:
         wandb.log({
             "step": steps,
-            f"{split} Supp F1": supp_f1,
-            f"{split} Supp EM": supp_em,
             f"{split} Answ EM": em,
             f"{split} Answ F1a": f1_a,
             f"{split} Answ F1m": f1_m,
@@ -311,6 +221,8 @@ def main():
     best_valid = float('-inf')
     model.train()
     answer_model.train()
+    train_time = 0
+    test_time = []
     for epoch in range(args.epoch):
         for step, batch in enumerate(train_dataloader):
             if completed_steps % args.eval_steps == 0 and completed_steps > 0 and step % args.gradient_accumulation_steps == 0:
@@ -319,15 +231,19 @@ def main():
                 with torch.no_grad():
                     valid_acc = evaluate(completed_steps, args, model, linear, answer_model,
                                              tokenizer, answer_tokenizer, eval_dataloader, "Valid")
+                    st_time = time.time()
                     test_acc = evaluate(completed_steps, args, model, linear, answer_model,
                                              tokenizer, answer_tokenizer, test_dataloader, "Test")
+                    ed_time = time.time()
+                    test_time.append(ed_time-st_time)
                 if valid_acc > best_valid:
                     best_valid = valid_acc
                     if args.save_model:
                         model.save_pretrained(f"{args.output_model_dir}/{run_name}")
                 model.train()
                 answer_model.train()
-            _, _, loss = run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, args.topks, mode=args.mode)
+            st_time = time.time()
+            _, loss = run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, args.topks, mode=args.mode)
             loss.backward()
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                 optim.step()
@@ -339,6 +255,10 @@ def main():
                     wandb.log({
                         "step": completed_steps,
                         "Train Loss": loss.item()})
+            ed_time = time.time()
+            train_time += ed_time-st_time
 
+    print(train_time)
+    print(test_time, sum(test_time)/len(test_time))
 if __name__ == '__main__':
     main()

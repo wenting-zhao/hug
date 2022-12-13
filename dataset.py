@@ -669,27 +669,26 @@ def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
         curr_sents = []
         for i in range(0, len(e['z']), fixed):
             sent = f'{tok.unk_token} ' + f' {tok.unk_token} '.join(e['z'][i:i+fixed])
-            sent = e['x'] + f' {tok.sep_token} ' + sent
+            sent = e['x'] + f' {tok.sep_token} ' + sent + f' {answ_tok.sep_token} ' + e['y']
             curr_sents.append(sent)
         lengths.append(len(curr_sents))
         sents += curr_sents
         z_len = len(e['z'])
         rang = list(range(z_len))
         curr_idxes = []
-        for i in range(2, max_e+1):
+        for i in range(len(rang), len(rang)+1):
             curr_idxes += list(combinations(rang, r=i))
         for one in curr_idxes:
             curr_supps = [e['z'][m] for m in one]
             curr_supps = ' '.join(curr_supps)
-            curr_supps = e['x'] + f' {answ_tok.sep_token} ' + curr_supps + f' {answ_tok.sep_token} ' + f' {answ_tok.unk_token} ' + e['y']
+            curr_supps = e['x'] + f' {answ_tok.sep_token} ' + f' {answ_tok.unk_token} ' + e['y'] + f' {answ_tok.sep_token} ' +curr_supps
             supps.append(curr_supps)
         ds.append(curr_idxes)
         slengths.append(len(curr_idxes))
         num_s.append(z_len)
     lengths = len_helper(lengths)
     slengths = len_helper(slengths)
-    #tokenized_sents = tok(sents, truncation=True, return_attention_mask=False)['input_ids']
-    tokenized_sents = tok(sents, return_attention_mask=False)['input_ids']
+    tokenized_sents = tok(sents, truncation=True, return_attention_mask=False)['input_ids']
     for s in tokenized_sents:
         if len(s) > 512:
             print("WARNING")
@@ -732,7 +731,7 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         out.append(curr)
         counts.append(len(values))
     fname = f"cache/multirc_nobart_{split}.pkl"
-    if os.path.isfile(fname):
+    if False:#os.path.isfile(fname):
         with open(fname, 'rb') as f:
             sents, supps, ds, num_s = pickle.load(f)
     else:
