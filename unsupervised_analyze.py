@@ -174,5 +174,22 @@ print("piai:", len(piai1)/len(pred_paras1), len(piai2)/len(pred_paras1))
 get_changes({"pcac": pcac1, "pcai": pcai1, "piac": piac1, "piai": piai1},
         {"pcac": pcac2, "pcai": pcai2, "piac": piac2, "piai": piai2})
 
+print(update_sp(pred_paras1, gold_paras))
+print(f1_score(pred_ans1, gold_ans))
 print(update_sp(pred_paras2, gold_paras))
 print(f1_score(pred_ans2, gold_ans))
+print()
+
+datatype = [i for i in data["type"]]
+new1 = [i for i in range(len(datatype)) if datatype[i] == "bridge"]
+new2 = [i for i in range(len(datatype)) if datatype[i] == "comparison"]
+new_para11 = [pred_paras1[i] for i in new1]
+new_para12 = [pred_paras1[i] for i in new2]
+new_para21 = [pred_paras2[i] for i in new1]
+new_para22 = [pred_paras2[i] for i in new2]
+gold_paras1 = [gold_paras[i] for i in new1]
+gold_paras2 = [gold_paras[i] for i in new2]
+print(update_sp(new_para11, gold_paras1))
+print(update_sp(new_para12, gold_paras2))
+print(update_sp(new_para21, gold_paras1))
+print(update_sp(new_para22, gold_paras2))
