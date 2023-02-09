@@ -58,6 +58,7 @@ def get_args():
     parser.add_argument('--topkp', default=5, type=int)
     parser.add_argument('--topks', default=5, type=int)
     parser.add_argument('--mode', default="topk", type=str)
+    parser.add_argument('--dataset', default="multirc", type=str, choices=["hotpotqa", "multirc", "fever"])
     parser.add_argument("--batch_size", '-b', default=1, type=int,
                         help="batch size per gpu.")
     parser.add_argument("--eval_batch_size", default=32, type=int,

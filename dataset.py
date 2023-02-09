@@ -514,6 +514,9 @@ def preprocess_answer_function(examples, tokenizer, max_sent):
     final = [(x, y) for x, y in zip(tokenized_questions, tokenized_sents)]
     return final, tokenized_answers
 
+def prepare_hotpotqa():
+    pass
+
 class HotpotQADataset(torch.utils.data.Dataset):
     def __init__(self, paras, labels):
         self.paras, self.labels = paras, labels
@@ -680,7 +683,7 @@ def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
         z_len = len(e['z'])
         rang = list(range(z_len))
         curr_idxes = []
-        for i in range(2, max_e+1):
+        for i in range(1, max_e+1):
             curr_idxes += list(combinations(rang, r=i))
         for one in curr_idxes:
             curr_supps = [e['z'][m] for m in one]
@@ -700,6 +703,7 @@ def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
             print("WARNING")
     tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
     answers = [e['y'] for e in examples]
+    print(answers[0])
     if not isinstance(answers[0], list):
         print("not list")
         tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
@@ -750,7 +754,7 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
                 curr['y'] += [f'Answer:{ans} (correct)', f'Answer:{ans} (wrong)']
         out.append(curr)
         counts.append(len(values))
-    fname = f"cache/multirc_{split}.pkl"
+    fname = f"cache/multirc_rag_{split}.pkl"
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
             sents, supps, answs, ds, num_s = pickle.load(f)
