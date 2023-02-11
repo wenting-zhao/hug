@@ -589,15 +589,13 @@ def preprocess_fever(examples, tok, answ_tok, fixed, max_e):
         z_len = len(e['z'])
         rang = list(range(z_len))
         curr_idxes = []
-        for i in range(1, min(max_e+1, z_len+1)):
-            curr_curr_idxes = []
-            for j in range(z_len-i+1):
-                curr_curr_idxes.append(rang[j:j+i])
-                curr_supps = [e['z'][m] for m in curr_curr_idxes[-1]]
-                curr_supps = ' '.join(curr_supps)
-                curr_supps = e['x'] + f' {answ_tok.sep_token} ' + curr_supps
-                supps.append(curr_supps)
-            curr_idxes.append(curr_curr_idxes)
+        for i in range(1, max_e+1):
+            curr_idxes += list(combinations(rang, r=i))
+        for idxes in curr_idxes:
+            curr_supps = [e['z'][m] for m in idxes]
+            curr_supps = ' '.join(curr_supps)
+            curr_supps = e['x'] + f' {answ_tok.sep_token} ' + curr_supps
+            supps.append(curr_supps)
         ds.append(curr_idxes)
         slengths.append(len([x for xx in curr_idxes for x in xx]))
         num_s.append(z_len)
@@ -637,7 +635,7 @@ def prepare_fever(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path="
         label = 0 if curr['y'] == "supports" else 1
         labels.append(label)
         out.append(curr)
-    fname = f"cache/fever_{split}.pkl"
+    fname = f"cache/fever_rag_{split}.pkl"
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
             sents, supps, answs, ds, num_s = pickle.load(f)
@@ -703,7 +701,6 @@ def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
             print("WARNING")
     tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
     answers = [e['y'] for e in examples]
-    print(answers[0])
     if not isinstance(answers[0], list):
         print("not list")
         tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
@@ -725,7 +722,6 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
     sent_labels = []
     labels = []
     groups = defaultdict(list)
-    counts = []
     for d in data:
         idx = d["annotation_id"].rfind(':')
         key = d["annotation_id"][:idx].strip()
@@ -753,7 +749,6 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
                 ans = d['query'].split('||')[-1]
                 curr['y'] += [f'Answer:{ans} (correct)', f'Answer:{ans} (wrong)']
         out.append(curr)
-        counts.append(len(values))
     fname = f"cache/multirc_rag_{split}.pkl"
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
@@ -762,11 +757,11 @@ def prepare_multirc(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path
         sents, supps, answs, ds, num_s = preprocess_multirc(out, tokenizer, answer_tokenizer, fixed, max_e)
         with open(fname, 'wb') as f:
             pickle.dump((sents, supps, answs, ds, num_s), f)
-    return (sents, supps, answs, ds, num_s, sent_labels, labels, counts)
+    return (sents, supps, answs, ds, num_s, sent_labels, labels)
 
 class MultiRCDataset(torch.utils.data.Dataset):
     def __init__(self, everything):
-        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.labels, self.counts = everything
+        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.labels = everything
 
     def __getitem__(self, idx):
         item = dict()
@@ -777,7 +772,6 @@ class MultiRCDataset(torch.utils.data.Dataset):
         item['num_s'] = self.num_s[idx]
         item['sent_labels'] = self.sent_labels[idx]
         item['labels'] = self.labels[idx]
-        item['counts'] = self.counts[idx]
         return item
 
     def __len__(self):
