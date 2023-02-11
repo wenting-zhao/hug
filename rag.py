@@ -188,6 +188,7 @@ def pad_answers(tokenizer, contexts, raw_answers, topks, labels, train, dataset)
         lens = [len(k) for k in topks]
         out_cs = []
         for cont, cur_topks in zip(contexts, topks):
+            if not train: cur_topks = cur_topks[:1]
             curr = [cont[j] for j in cur_topks]
             out_cs += curr
         contexts = [{"input_ids": c} for c in out_cs]
@@ -227,6 +228,8 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train, datas
             output2 = output2.view(input_ids.size(0), -1).sum(dim=-1).view(-1, 1)
             outputs = -torch.cat([output1, output2], dim=1)
     elif dataset == "hotpotqa":
+        input_ids = input_ids[:, :300]
+        attn_mask = attn_mask[:, :300]
         if train:
             outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
         else:
@@ -353,7 +356,7 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
     answ_results = []
     gold_answ = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, dataset=args.dataset, ks=1, train=False)
+        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, dataset=args.dataset, ks=3, train=False)
         sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
             sent_pred = sent_out.cpu().tolist()
@@ -362,13 +365,17 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         gold_sents += eval_batch['sent_labels']
         predictions = []
         for eval_out in eval_outs:
-            eval_out = eval_out.view(-1, 2)
-            pred = eval_out.argmax(dim=-1)
-            predictions.append(pred.cpu().tolist())
+            if args.dataset == "hotpotqa":
+                pred = tok.decode(eval_out, skip_special_tokens=True)
+            else:
+                eval_out = eval_out.view(-1, 2)
+                pred = eval_out.argmax(dim=-1)
+                pred = pred.cpu().tolist()
+            predictions.append(pred)
         answ_results += predictions
         if args.dataset == "fever":
             gold_answ += [[elm] for elm in eval_batch["labels"]]
-        elif args.dataset == "multirc":
+        else:
             gold_answ += eval_batch["labels"]
     supp_em, supp_f1, prec, recall = update_sp(sent_results, gold_sents)
     if args.dataset == "hotpotqa":

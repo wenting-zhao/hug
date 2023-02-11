@@ -82,7 +82,7 @@ def prepare_hotpotqa(tokenizer, answ_tokenizer, split, data, fixed, max_e, path=
     assert fixed > 0
     print("preparing hotpotqa")
     if split == "val": split = "validation"
-    data = data[split][:100]
+    data = data[split][:]
 
     labels = []
     for title_label, titles in zip(data['supporting_facts'], data['context']):
@@ -105,7 +105,7 @@ def prepare_hotpotqa(tokenizer, answ_tokenizer, split, data, fixed, max_e, path=
         sents, supps, answers, ds, num_s, sent_labels = preprocess_hotpotqa_function(data, tokenizer, answ_tokenizer, fixed, max_e)
         with open(fname, 'wb') as f:
             pickle.dump((sents, supps, answers, ds, num_s, sent_labels), f)
-    return (sents, supps, answers, ds, num_s, sent_labels, answers)
+    return (sents, supps, answers, ds, num_s, sent_labels, data["answer"])
 
 class HotpotQADataset(torch.utils.data.Dataset):
     def __init__(self, everything):
