@@ -18,6 +18,7 @@ from torch.optim import AdamW
 from torch import nn
 from utils import get_args, mean_pooling, padding, normalize_answer
 from utils import prepare_linear, prepare_optim_and_scheduler, padding, collect_multirc_docs, collect_fever_docs
+from utils import  load_hotpotqa
 import numpy as np
 from sklearn.metrics import f1_score
 import time
@@ -80,8 +81,11 @@ def prepare_dataloader(tok, answ_tok, args):
     data_collator = DataCollatorForMultipleChoice(tok, padding='longest', max_length=512)
     dataloaders = []
     for split in ['train', 'val', 'test']:
-        if args.dataset == "hotpotqa" and split == "test": continue
+        if args.dataset == "hotpotqa" and split == "test":
+            dataloaders.append(None)
+            break
         if args.dataset == "hotpotqa":
+            docs = load_hotpotqa()
             prepare = prepare_hotpotqa
             Dataset = HotpotQADataset
         elif args.dataset == "multirc":
@@ -180,7 +184,7 @@ def pad_answers(tokenizer, contexts, raw_answers, topks, labels, train, dataset)
             return_tensors="pt",
             return_attention_mask=False,
         )['input_ids']
-    elif dataset == "fever":
+    else:
         lens = [len(k) for k in topks]
         out_cs = []
         for cont, cur_topks in zip(contexts, topks):
@@ -204,15 +208,14 @@ def pad_answers(tokenizer, contexts, raw_answers, topks, labels, train, dataset)
     return out['input_ids'].to(device), out['attention_mask'].to(device), answers.to(device)
 
 def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train, dataset):
+    answs[answs==model.config.pad_token_id] = -100
     if dataset == "multirc":
-        answs[answs==model.config.pad_token_id] = -100
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
-        outputs = outputs.view(input_ids.size(0), -1).sum(dim=-1)
+        outputs = -outputs.view(input_ids.size(0), -1).sum(dim=-1)
     elif dataset == "fever":
-        answs[answs==model.config.pad_token_id] = -100
         if train:
             outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
-            outputs = outputs.view(input_ids.size(0), -1).sum(dim=-1)
+            outputs = -outputs.view(input_ids.size(0), -1).sum(dim=-1)
         else:
             answs = tokenizer("supports", return_tensors="pt", return_attention_mask=False)['input_ids'].to(device)
             answs = answs.repeat(input_ids.size(0), 1)
@@ -222,18 +225,27 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train, datas
             answs = answs.repeat(input_ids.size(0), 1)
             output2 = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
             output2 = output2.view(input_ids.size(0), -1).sum(dim=-1).view(-1, 1)
-            outputs = torch.cat([output1, output2], dim=1)
-    return -outputs
+            outputs = -torch.cat([output1, output2], dim=1)
+    elif dataset == "hotpotqa":
+        if train:
+            outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
+        else:
+            outputs = model.generate(input_ids, num_beams=1, min_length=1, max_length=20)
+    return outputs
 
-def process_answ(answ, ps_out, train, dataset):
+def process_answ(answ, ps_out, train, dataset, in_len=None):
     start, end = 0, 0
     outs = []
+    if dataset == "hotpotqa":
+        answ = answ.loss.view(in_len, -1)
     for curr in ps_out:
         if train or dataset != "multirc":
             end += len(curr)
         else:
             end += len(curr) * 2
         out = answ[start:end]
+        if dataset == "hotpotqa":
+            out = (-out).sum(dim=-1)
         outs.append(out)
         start = end
     return outs
@@ -250,7 +262,9 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     in_len = len(answer_in)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train, dataset)
     passed = outs if (train or dataset != "multirc") else batch['labels']
-    answ_out = process_answ(answ_out, passed, train, dataset)
+    if dataset == "hotpotqa" and not train:
+        return answ_out, outs, 0
+    answ_out = process_answ(answ_out, passed, train, dataset, in_len=in_len)
     loss = 0.
     if train:
         for l, ps in zip(answ_out, vals):
@@ -301,6 +315,38 @@ def update_answer(preds, golds):
     acc = sum(p == l for p, l in zip(predictions, labels)) / len(predictions)
     return em, f1_m, f1_a, acc
 
+def f1_score(predictions, ground_truths):
+    f1s, precs, recalls = 0, 0, 0
+    for prediction, ground_truth in zip(predictions, ground_truths):
+        prediction = normalize_answer(prediction)
+        ground_truth = normalize_answer(ground_truth)
+        ZERO_METRIC = (0, 0, 0)
+
+        if prediction in ['yes', 'no', 'noanswer'] and prediction != ground_truth:
+            f1, precision, recall = ZERO_METRIC
+            continue
+        if ground_truth in ['yes', 'no', 'noanswer'] and prediction != ground_truth:
+            f1, precision, recall = ZERO_METRIC
+            continue
+
+        prediction_tokens = prediction.split()
+        ground_truth_tokens = ground_truth.split()
+        common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+        num_same = sum(common.values())
+        if num_same == 0:
+            f1, precision, recall = ZERO_METRIC
+            continue
+        precision = 1.0 * num_same / len(prediction_tokens)
+        recall = 1.0 * num_same / len(ground_truth_tokens)
+        f1 = (2 * precision * recall) / (precision + recall)
+        f1s += f1
+        precs += precision
+        recalls += recall
+    f1s /= len(predictions)
+    precs /= len(predictions)
+    recalls /= len(predictions)
+    return f1s, precs, recalls
+
 def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, split):
     sent_results = []
     gold_sents = []
@@ -325,19 +371,31 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         elif args.dataset == "multirc":
             gold_answ += eval_batch["labels"]
     supp_em, supp_f1, prec, recall = update_sp(sent_results, gold_sents)
-    em, f1_m, f1_a, acc = update_answer(answ_results, gold_answ)
-    if not args.nolog:
-        wandb.log({
-            "step": steps,
-            f"{split} Supp F1": supp_f1,
-            f"{split} Supp EM": supp_em,
-            f"{split} Supp Prec": prec,
-            f"{split} Supp Rec": recall,
-            f"{split} Answ EM": em,
-            f"{split} Answ F1a": f1_a,
-            f"{split} Answ F1m": f1_m,
-            f"{split} Answ Acc": acc,
-        })
+    if args.dataset == "hotpotqa":
+        f1_a, _, _ = f1_score(answ_results, gold_answ)
+        if not args.nolog:
+            wandb.log({
+                "step": steps,
+                f"{split} Supp F1": supp_f1,
+                f"{split} Supp EM": supp_em,
+                f"{split} Supp Prec": prec,
+                f"{split} Supp Rec": recall,
+                f"{split} Answ F1": f1_a,
+            })
+    else:
+        em, f1_m, f1_a, acc = update_answer(answ_results, gold_answ)
+        if not args.nolog:
+            wandb.log({
+                "step": steps,
+                f"{split} Supp F1": supp_f1,
+                f"{split} Supp EM": supp_em,
+                f"{split} Supp Prec": prec,
+                f"{split} Supp Rec": recall,
+                f"{split} Answ EM": em,
+                f"{split} Answ F1a": f1_a,
+                f"{split} Answ F1m": f1_m,
+                f"{split} Answ Acc": acc,
+            })
     if args.save_results and split == "Valid":
         torch.save((sent_results, gold_sents, answ_results, gold_answ), f"logging/unsupervised|{args.run_name}|step-{steps}.pt")
     return f1_a
@@ -392,8 +450,9 @@ def main():
                     valid_acc = evaluate(completed_steps, args, model, linear, answer_model,
                                              tokenizer, answer_tokenizer, eval_dataloader, "Valid")
                     st_time = time.time()
-                    test_acc = evaluate(completed_steps, args, model, linear, answer_model,
-                                             tokenizer, answer_tokenizer, test_dataloader, "Test")
+                    if args.dataset != "hotpotqa":
+                        test_acc = evaluate(completed_steps, args, model, linear, answer_model,
+                                                 tokenizer, answer_tokenizer, test_dataloader, "Test")
                     ed_time = time.time()
                     test_time.append(ed_time-st_time)
                 if valid_acc > best_valid:
