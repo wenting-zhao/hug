@@ -22,6 +22,7 @@ from utils import  load_hotpotqa
 import numpy as np
 from sklearn.metrics import f1_score
 import time
+from collections import Counter
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 set_seed(555)
