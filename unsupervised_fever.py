@@ -250,6 +250,9 @@ def main():
 
     progress_bar = tqdm(range(args.max_train_steps))
     completed_steps = 0
+    if args.gradient_checkpoint:
+        #all_layers[0].gradient_checkpointing_enable()
+        answer_model.gradient_checkpointing_enable()
 
     if not args.nolog:
         wandb.init(name=run_name,
