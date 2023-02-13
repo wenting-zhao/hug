@@ -725,12 +725,11 @@ def prepare_musique(tokenizer, answer_tokenizer, split, fixed, max_e, path="data
         sent_labels.append(sent_label)
         out.append(curr)
     fname = f"cache/musique_{split}.pkl"
-    sents, supps, answs, ds, num_s = preprocess_musique(out, tokenizer, answer_tokenizer, fixed, max_e)
     if os.path.isfile(fname):
         with open(fname, 'rb') as f:
             sents, supps, answs, ds, num_s = pickle.load(f)
     else:
-        sents, supps, answs, ds, num_s = preprocess_multirc(out, tokenizer, answer_tokenizer, fixed, max_e)
+        sents, supps, answs, ds, num_s = preprocess_musique(out, tokenizer, answer_tokenizer, fixed, max_e)
         with open(fname, 'wb') as f:
             pickle.dump((sents, supps, answs, ds, num_s), f)
     return (sents, supps, answs, ds, num_s, sent_labels, labels)
