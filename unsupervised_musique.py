@@ -187,7 +187,7 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     loss = 0.
     if train:
         answ_out = process_answ(answ_out, outs, in_len)
-        for l, ps in zip(answ_out, answ_out):
+        for l, ps in zip(answ_out, vals):
             l = l + ps
             l = torch.logsumexp(l, dim=-1)
             loss -= l.mean()
