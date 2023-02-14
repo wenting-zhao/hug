@@ -158,9 +158,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, beam, train)
     if train:
         outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
     else:
-        print(input_ids.shape)
         outputs = model.generate(input_ids, num_beams=beam, min_length=1, max_length=20)
-        print(outputs.shape)
     return outputs
 
 def process_answ(answ, ps_out, in_len):
@@ -312,10 +310,6 @@ def main():
 
     progress_bar = tqdm(range(args.max_train_steps))
     completed_steps = 0
-
-    if args.eval_steps == 5000:
-        args.eval_steps = num_update_steps_per_epoch
-    print(f"eval steps: {args.eval_steps}")
 
     if not args.nolog:
         wandb.init(name=run_name,
