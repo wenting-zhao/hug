@@ -217,6 +217,96 @@ class FeverDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.sent_labels)
 
+def preprocess_musique(examples, tok, answ_tok, fixed, max_e):
+    sents = []
+    supps = []
+    lengths = []
+    slengths = []
+    ds = []
+    num_s = []
+    for e in examples:
+        curr_sents = []
+        for i in range(0, len(e['z']), fixed):
+            sent = f'{tok.unk_token} ' + f' {tok.unk_token} '.join(e['z'][i:i+fixed])
+            sent = e['x'] + f' {tok.sep_token} ' + sent
+            curr_sents.append(sent)
+        lengths.append(len(curr_sents))
+        sents += curr_sents
+        z_len = len(e['z'])
+        rang = list(range(z_len))
+        curr_idxes = []
+        for i in range(1, max_e+1):
+            curr_idxes += list(combinations(rang, r=i))
+        for one in curr_idxes:
+            curr_supps = [e['z'][m] for m in one]
+            curr_supps = ' '.join(curr_supps)
+            q = e['x']
+            curr_supps = q + f' {answ_tok.sep_token} ' + curr_supps
+            supps.append(curr_supps)
+        ds.append(curr_idxes)
+        slengths.append(len(curr_idxes))
+        num_s.append(z_len)
+    lengths = len_helper(lengths)
+    slengths = len_helper(slengths)
+    tokenized_sents = tok(sents, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_sents = [tokenized_sents[lengths[i]:lengths[i+1]] for i in range(len(lengths)-1)]
+    answers = [e['y'] for e in examples]
+    tokenized_answers = answ_tok(answers, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = answ_tok(supps, truncation=True, return_attention_mask=False)['input_ids']
+    tokenized_supps = [tokenized_supps[slengths[i]:slengths[i+1]] for i in range(len(slengths)-1)]
+    assert len(tokenized_supps) == len(tokenized_answers) == len(tokenized_sents)
+    return tokenized_sents, tokenized_supps, tokenized_answers, ds, num_s
+
+def prepare_musique(tokenizer, answer_tokenizer, split, docs, fixed, max_e, path="data/musique/"):
+    print(f"prepare MuSiQue {split}")
+    data = []
+    with open(f"{path}/musique_ans_v1.0_{split}.jsonl", 'r') as fin:
+        for line in fin:
+            data.append(json.loads(line))
+    out = []
+    sent_labels = []
+    labels = []
+    for d in data:
+        curr = dict()
+        curr['x'] = d["question"]
+        curr['y'] = d["answer"]
+        curr['z'] = []
+        sent_label = []
+        for p in d["paragraphs"]:
+            curr['z'].append(p["paragraph_text"])
+            if p["is_supporting"]:
+                sent_label.append(p["idx"])
+        labels.append(d["answer"])
+        sent_labels.append(sent_label)
+        out.append(curr)
+    fname = f"cache/musique_rag_{split}.pkl"
+    if os.path.isfile(fname):
+        with open(fname, 'rb') as f:
+            sents, supps, answs, ds, num_s = pickle.load(f)
+    else:
+        sents, supps, answs, ds, num_s = preprocess_musique(out, tokenizer, answer_tokenizer, fixed, max_e)
+        with open(fname, 'wb') as f:
+            pickle.dump((sents, supps, answs, ds, num_s), f)
+    return (sents, supps, answs, ds, num_s, sent_labels, labels)
+
+class MuSiQueDataset(torch.utils.data.Dataset):
+    def __init__(self, everything):
+        self.sents, self.supps, self.answs, self.ds, self.num_s, self.sent_labels, self.labels = everything
+
+    def __getitem__(self, idx):
+        item = dict()
+        item['sents'] = self.sents[idx]
+        item['supps'] = self.supps[idx]
+        item['answs'] = self.answs[idx]
+        item['ds'] = self.ds[idx]
+        item['num_s'] = self.num_s[idx]
+        item['sent_labels'] = self.sent_labels[idx]
+        item['labels'] = self.labels[idx]
+        return item
+
+    def __len__(self):
+        return len(self.sent_labels)
+
 def preprocess_multirc(examples, tok, answ_tok, fixed, max_e):
     sents = []
     supps = []

@@ -7,6 +7,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from dataset import prepare_multirc, MultiRCDataset
 from dataset import prepare_fever, FeverDataset
 from dataset import prepare_hotpotqa, HotpotQADataset
+from dataset import prepare_musique, MuSiQueDataset
 from transformers import AutoModel, AutoModelForSeq2SeqLM
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from transformers import get_scheduler, set_seed
@@ -82,7 +83,7 @@ def prepare_dataloader(tok, answ_tok, args):
     data_collator = DataCollatorForMultipleChoice(tok, padding='longest', max_length=512)
     dataloaders = []
     for split in ['train', 'val', 'test']:
-        if args.dataset == "hotpotqa" and split == "test":
+        if args.dataset in ["hotpotqa", "musique"] and split == "test":
             dataloaders.append(None)
             break
         if args.dataset == "hotpotqa":
@@ -95,6 +96,10 @@ def prepare_dataloader(tok, answ_tok, args):
         elif args.dataset == "fever":
             prepare = prepare_fever
             Dataset = FeverDataset
+        elif args.dataset == "musique":
+            prepare = prepare_musique
+            Dataset = MuSiQueDataset
+            if split == 'val': split = 'dev'
         else:
             raise NotImplementedError
         everything = prepare(tok, answ_tok, split, docs, fixed=args.truncate_paragraph, max_e=args.max_e_len)
@@ -228,9 +233,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train, datas
             output2 = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs).loss
             output2 = output2.view(input_ids.size(0), -1).sum(dim=-1).view(-1, 1)
             outputs = -torch.cat([output1, output2], dim=1)
-    elif dataset == "hotpotqa":
-        input_ids = input_ids[:, :300]
-        attn_mask = attn_mask[:, :300]
+    elif dataset in ["hotpotqa", "musique"]:
         if train:
             outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=answs)
         else:
@@ -240,7 +243,7 @@ def run_answer_model(model, input_ids, attn_mask, answs, tokenizer, train, datas
 def process_answ(answ, ps_out, train, dataset, in_len=None):
     start, end = 0, 0
     outs = []
-    if dataset == "hotpotqa":
+    if dataset in ["hotpotqa", "musique"]:
         answ = answ.loss.view(in_len, -1)
     for curr in ps_out:
         if train or dataset != "multirc":
@@ -248,7 +251,7 @@ def process_answ(answ, ps_out, train, dataset, in_len=None):
         else:
             end += len(curr) * 2
         out = answ[start:end]
-        if dataset == "hotpotqa":
+        if dataset in ["hotpotqa", "musique"]:
             out = (-out).sum(dim=-1)
         outs.append(out)
         start = end
@@ -266,7 +269,7 @@ def run_model(batch, model, linear, answer_model, tokenizer, answer_tokenizer, k
     in_len = len(answer_in)
     answ_out = run_answer_model(answer_model, answer_in, answer_attn, labels, answer_tokenizer, train, dataset)
     passed = outs if (train or dataset != "multirc") else batch['labels']
-    if dataset == "hotpotqa" and not train:
+    if dataset in ["hotpotqa", "musique"] and not train:
         return answ_out, outs, 0
     answ_out = process_answ(answ_out, passed, train, dataset, in_len=in_len)
     loss = 0.
@@ -357,7 +360,7 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
     answ_results = []
     gold_answ = []
     for step, eval_batch in enumerate(dataloader):
-        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, dataset=args.dataset, ks=3, train=False)
+        eval_outs, sent_outs, _ = run_model(eval_batch, model, linear, answ_model, tok, answ_tok, dataset=args.dataset, ks=2, train=False)
         sent_preds = []
         for sent_out, s_map in zip(sent_outs, eval_batch['s_maps']):
             sent_pred = sent_out.cpu().tolist()
@@ -366,7 +369,7 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         gold_sents += eval_batch['sent_labels']
         predictions = []
         for eval_out in eval_outs:
-            if args.dataset == "hotpotqa":
+            if args.dataset in ["hotpotqa", "musique"]:
                 pred = tok.decode(eval_out, skip_special_tokens=True)
             else:
                 eval_out = eval_out.view(-1, 2)
@@ -379,7 +382,7 @@ def evaluate(steps, args, model, linear, answ_model, tok, answ_tok, dataloader, 
         else:
             gold_answ += eval_batch["labels"]
     supp_em, supp_f1, prec, recall = update_sp(sent_results, gold_sents)
-    if args.dataset == "hotpotqa":
+    if args.dataset in ["hotpotqa", "musique"]:
         f1_a, _, _ = f1_score(answ_results, gold_answ)
         if not args.nolog:
             wandb.log({
@@ -458,7 +461,7 @@ def main():
                     valid_acc = evaluate(completed_steps, args, model, linear, answer_model,
                                              tokenizer, answer_tokenizer, eval_dataloader, "Valid")
                     st_time = time.time()
-                    if args.dataset != "hotpotqa":
+                    if args.dataset in ["hotpotqa", "multirc"]:
                         test_acc = evaluate(completed_steps, args, model, linear, answer_model,
                                                  tokenizer, answer_tokenizer, test_dataloader, "Test")
                     ed_time = time.time()
